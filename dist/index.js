@@ -24,7 +24,6 @@ async function main() {
         startBridgeMonitor();
     }
     const app = express();
-    app.use(express.json());
     // Health check — used by Context Protocol validator and container probes
     app.get('/health', (_req, res) => {
         res.json({
@@ -34,6 +33,31 @@ async function main() {
             timestamp: new Date().toISOString(),
         });
     });
+    // QuickNode Streams webhook — raw body required for HMAC signature verification
+    app.post('/ingest/streams', express.raw({ type: '*/*' }), (req, res) => {
+        const secret = process.env['QUICKNODE_STREAM_SECRET'];
+        const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        if (secret) {
+            const sig = req.headers['x-qn-signature'];
+            const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+            if (!sig || sig !== expected) {
+                res.status(401).json({ error: 'invalid signature' });
+                return;
+            }
+        }
+        try {
+            const bodyStr = rawBody.toString().trim();
+            const payload = bodyStr ? JSON.parse(bodyStr) : {};
+            const eventCount = Array.isArray(payload.data) ? payload.data.length : 0;
+            console.log(`[streams] received ${eventCount} event(s)`);
+            res.status(200).json({ received: eventCount });
+        }
+        catch {
+            res.status(200).json({ received: 0 });
+        }
+    });
+    // Apply JSON parsing only to MCP routes
+    app.use('/mcp', express.json());
     // Context Protocol auth middleware — verifies JWTs on protected MCP methods (tools/call)
     app.use('/mcp', createContextMiddleware());
     // Stateless StreamableHTTP transport — each POST is a self-contained MCP session
@@ -61,28 +85,6 @@ async function main() {
         const server = createMcpServer();
         await server.connect(transport);
         await transport.handleRequest(req, res);
-    });
-    // QuickNode Streams webhook — receives real-time ERC-20 Transfer + DEX swap events
-    app.post('/ingest/streams', express.raw({ type: 'application/json' }), (req, res) => {
-        const secret = process.env['QUICKNODE_STREAM_SECRET'];
-        if (secret) {
-            const sig = req.headers['x-qn-signature'];
-            const expected = createHmac('sha256', secret).update(req.body).digest('hex');
-            if (!sig || sig !== expected) {
-                res.status(401).json({ error: 'invalid signature' });
-                return;
-            }
-        }
-        try {
-            const payload = JSON.parse(req.body.toString());
-            const eventCount = Array.isArray(payload.data) ? payload.data.length : 0;
-            console.log(`[streams] received ${eventCount} event(s)`);
-            // TODO: forward events into accumulation-scanner and bridge-monitor pipelines
-            res.status(200).json({ received: eventCount });
-        }
-        catch {
-            res.status(400).json({ error: 'invalid JSON' });
-        }
     });
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`[onchain-flow-mcp] Server running on http://0.0.0.0:${PORT}`);
