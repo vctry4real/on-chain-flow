@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   });
 
   // QuickNode Streams webhook — raw body required for HMAC signature verification
-  app.post('/ingest/streams', express.raw({ type: '*/*' }), (req: Request, res: Response) => {
+  app.post('/ingest/streams', express.raw({ type: '*/*', limit: '10mb' }), (req: Request, res: Response) => {
     const secret = process.env['QUICKNODE_STREAM_SECRET'];
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
