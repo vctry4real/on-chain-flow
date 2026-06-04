@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -61,6 +61,28 @@ async function main() {
         const server = createMcpServer();
         await server.connect(transport);
         await transport.handleRequest(req, res);
+    });
+    // QuickNode Streams webhook — receives real-time ERC-20 Transfer + DEX swap events
+    app.post('/ingest/streams', express.raw({ type: 'application/json' }), (req, res) => {
+        const secret = process.env['QUICKNODE_STREAM_SECRET'];
+        if (secret) {
+            const sig = req.headers['x-qn-signature'];
+            const expected = createHmac('sha256', secret).update(req.body).digest('hex');
+            if (!sig || sig !== expected) {
+                res.status(401).json({ error: 'invalid signature' });
+                return;
+            }
+        }
+        try {
+            const payload = JSON.parse(req.body.toString());
+            const eventCount = Array.isArray(payload.data) ? payload.data.length : 0;
+            console.log(`[streams] received ${eventCount} event(s)`);
+            // TODO: forward events into accumulation-scanner and bridge-monitor pipelines
+            res.status(200).json({ received: eventCount });
+        }
+        catch {
+            res.status(400).json({ error: 'invalid JSON' });
+        }
     });
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`[onchain-flow-mcp] Server running on http://0.0.0.0:${PORT}`);
