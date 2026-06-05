@@ -56,10 +56,11 @@ async function main(): Promise<void> {
     }
 
     try {
+      const chain = (req.headers['x-qn-chain'] as string | undefined) ?? 'ethereum';
       const bodyStr = rawBody.toString().trim();
       const payload = bodyStr ? JSON.parse(bodyStr) as StreamPayload : { data: [] };
-      const stored = await processStreamPayload(payload);
-      console.log(`[streams] processed ${payload.data?.length ?? 0} logs, stored ${stored} events`);
+      const stored = await processStreamPayload(payload, chain);
+      console.log(`[streams] chain=${chain} processed ${payload.data?.length ?? 0} logs, stored ${stored} events`);
       res.status(200).json({ received: payload.data?.length ?? 0, stored });
     } catch {
       res.status(200).json({ received: 0, stored: 0 });
