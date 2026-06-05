@@ -8,6 +8,7 @@ import { connectRedis } from './cache/client.js';
 import { registerAllTools } from './tools/index.js';
 import { startAccumulationScanner } from './ingest/accumulation-scanner.js';
 import { startBridgeMonitor } from './ingest/bridge-monitor.js';
+import { processStreamPayload, type StreamPayload } from './ingest/event-processor.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
 
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
   });
 
   // QuickNode Streams webhook — raw body required for HMAC signature verification
-  app.post('/ingest/streams', express.raw({ type: '*/*', limit: '10mb' }), (req: Request, res: Response) => {
+  app.post('/ingest/streams', express.raw({ type: '*/*', limit: '10mb' }), async (req: Request, res: Response) => {
     const secret = process.env['QUICKNODE_STREAM_SECRET'];
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
@@ -56,12 +57,12 @@ async function main(): Promise<void> {
 
     try {
       const bodyStr = rawBody.toString().trim();
-      const payload = bodyStr ? JSON.parse(bodyStr) as { data?: unknown[] } : {};
-      const eventCount = Array.isArray(payload.data) ? payload.data.length : 0;
-      console.log(`[streams] received ${eventCount} event(s)`);
-      res.status(200).json({ received: eventCount });
+      const payload = bodyStr ? JSON.parse(bodyStr) as StreamPayload : { data: [] };
+      const stored = await processStreamPayload(payload);
+      console.log(`[streams] processed ${payload.data?.length ?? 0} logs, stored ${stored} events`);
+      res.status(200).json({ received: payload.data?.length ?? 0, stored });
     } catch {
-      res.status(200).json({ received: 0 });
+      res.status(200).json({ received: 0, stored: 0 });
     }
   });
 

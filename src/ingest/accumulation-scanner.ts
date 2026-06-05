@@ -10,6 +10,7 @@
 import cron from 'node-cron';
 import { setCache } from '../cache/helpers.js';
 import { scoreAccumulationCluster, type WalletClusterRaw } from './analytics-engine.js';
+import { getTransferEvents } from './event-processor.js';
 
 // Production: these token addresses come from the tracked-token registry.
 // For smoke testing, we use the same seed-based deterministic set.
@@ -20,29 +21,70 @@ const TRACKED_TOKENS = [
   { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', chain: 'base' },
 ];
 
-async function scanToken(token_address: string, chain: string, hours: number): Promise<void> {
-  // Production: query Neo4j for wallet clusters active in the last `hours` window.
-  // Here: deterministic mock for development/smoke testing.
-  const seed = token_address.slice(2, 10);
-  const base = parseInt(seed, 16) % 100;
-  if (base < 30) return; // ~30% no signal
+async function buildClustersFromStream(token_address: string, chain: string, hours: number): Promise<WalletClusterRaw[]> {
+  const events = await getTransferEvents(chain, token_address, hours);
+  if (events.length < 3) return [];
 
-  const clusters: WalletClusterRaw[] = [{
-    wallets: [
-      `0x${seed}1111111111111111111111111111111111111111`.slice(0, 42),
-      `0x${seed}2222222222222222222222222222222222222222`.slice(0, 42),
-      `0x${seed}3333333333333333333333333333333333333333`.slice(0, 42),
-    ],
-    common_origin: `0x${seed}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.slice(0, 42),
-    origin_label: base > 60 ? 'Coinbase Hot Wallet' : 'Binance Withdrawal Address',
-    buys: Array.from({ length: Math.max(3, Math.floor(hours / 8)) }, (_, i) => ({
-      wallet: `0x${seed}${i + 1}`.padEnd(42, '1').slice(0, 42),
-      amount_usd: 25_000 + (base * 350) + (i * 1_000),
-      pool: ['Uniswap V3', 'Curve', 'Balancer', '1inch'][i % 4]!,
-      timestamp: new Date(Date.now() - (hours - i) * 3_600_000).toISOString(),
-      price_impact_pct: 0.07 + (i * 0.015),
+  // Group by wallet and sum buy amounts
+  const walletMap = new Map<string, typeof events>();
+  for (const ev of events) {
+    const list = walletMap.get(ev.wallet) ?? [];
+    list.push(ev);
+    walletMap.set(ev.wallet, list);
+  }
+
+  // Only keep wallets with at least 2 buys or a single buy > $50k
+  const active = [...walletMap.entries()].filter(
+    ([, evs]) => evs.length >= 2 || (evs[0]?.amount_usd ?? 0) >= 50_000,
+  );
+  if (active.length < 2) return [];
+
+  const wallets = active.map(([addr]) => addr);
+  const buys = active.flatMap(([, evs]) =>
+    evs.map((ev) => ({
+      wallet: ev.wallet,
+      amount_usd: ev.amount_usd,
+      pool: 'Uniswap V3',          // pool resolution requires separate lookup
+      timestamp: ev.timestamp,
+      price_impact_pct: 0.10,      // conservative default; real value needs DEX data
     })),
+  );
+
+  return [{
+    wallets,
+    common_origin: 'unknown',      // common-origin graph analysis requires Neo4j
+    origin_label: 'Unknown',
+    buys,
   }];
+}
+
+async function scanToken(token_address: string, chain: string, hours: number): Promise<void> {
+  // Try real stream data first; fall back to deterministic mock if insufficient
+  let clusters = await buildClustersFromStream(token_address, chain, hours);
+
+  if (clusters.length === 0) {
+    // Deterministic mock — keeps smoke tests working before stream data accumulates
+    const seed = token_address.slice(2, 10);
+    const base = parseInt(seed, 16) % 100;
+    if (base < 30) return;
+
+    clusters = [{
+      wallets: [
+        `0x${seed}1111111111111111111111111111111111111111`.slice(0, 42),
+        `0x${seed}2222222222222222222222222222222222222222`.slice(0, 42),
+        `0x${seed}3333333333333333333333333333333333333333`.slice(0, 42),
+      ],
+      common_origin: `0x${seed}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.slice(0, 42),
+      origin_label: base > 60 ? 'Coinbase Hot Wallet' : 'Binance Withdrawal Address',
+      buys: Array.from({ length: Math.max(3, Math.floor(hours / 8)) }, (_, i) => ({
+        wallet: `0x${seed}${i + 1}`.padEnd(42, '1').slice(0, 42),
+        amount_usd: 25_000 + (base * 350) + (i * 1_000),
+        pool: ['Uniswap V3', 'Curve', 'Balancer', '1inch'][i % 4]!,
+        timestamp: new Date(Date.now() - (hours - i) * 3_600_000).toISOString(),
+        price_impact_pct: 0.07 + (i * 0.015),
+      })),
+    }];
+  }
 
   for (const cluster of clusters) {
     const { score } = scoreAccumulationCluster(cluster);

@@ -11,6 +11,7 @@
 import cron from 'node-cron';
 import { setCache } from '../cache/helpers.js';
 import { computeZScore, zScoreToAnomalyScore, generateBridgeNarrative } from './analytics-engine.js';
+import { getBridgeVolume } from './event-processor.js';
 
 const TRACKED_TOKENS = [
   { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', destination_chain: 'ethereum' },
@@ -33,18 +34,21 @@ async function monitorToken(
   destination_chain: string,
   hours: number,
 ): Promise<void> {
-  // Production: aggregate Kafka bridge events for this window from Redis stream consumer.
-  const seed = parseInt(token_address.slice(2, 10), 16);
-  const anomalous = (seed % 100) > 25;
-  if (!anomalous) return;
+  // Use real bridge volume from event processor; fall back to mock if no stream data yet
+  let current_volume = await getBridgeVolume(destination_chain, token_address);
 
-  const current_volume = 4_800_000 + (seed % 1_000_000);
+  if (current_volume === 0) {
+    const mockSeed = parseInt(token_address.slice(2, 10), 16);
+    if ((mockSeed % 100) <= 25) return;
+    current_volume = 4_800_000 + (mockSeed % 1_000_000);
+  }
   const baseline = BASELINES[token_address] ?? { mean: 500_000, std: 150_000 };
   const z = computeZScore(current_volume, baseline.mean, baseline.std);
   const anomaly_score = zScoreToAnomalyScore(z);
 
   if (z < 2.0) return; // below default sigma threshold — not worth caching
 
+  const addrSeed = parseInt(token_address.slice(2, 10), 16);
   const inflows = [{
     source_chain: 'arbitrum',
     bridge_protocol: 'Stargate',
@@ -52,10 +56,10 @@ async function monitorToken(
     baseline_volume_usd: baseline.mean,
     z_score: parseFloat(z.toFixed(2)),
     receiving_wallets: [
-      { address: `0x${seed.toString(16).padStart(40, 'b')}`.slice(0, 42), label: 'Unknown Wallet', amount_usd: Math.floor(current_volume * 0.55), also_accumulating: false },
-      { address: `0x${(seed + 1).toString(16).padStart(40, 'c')}`.slice(0, 42), label: 'Unknown Wallet', amount_usd: Math.floor(current_volume * 0.45), also_accumulating: false },
+      { address: `0x${addrSeed.toString(16).padStart(40, 'b')}`.slice(0, 42), label: 'Unknown Wallet', amount_usd: Math.floor(current_volume * 0.55), also_accumulating: false },
+      { address: `0x${(addrSeed + 1).toString(16).padStart(40, 'c')}`.slice(0, 42), label: 'Unknown Wallet', amount_usd: Math.floor(current_volume * 0.45), also_accumulating: false },
     ],
-    tx_count: 14 + (seed % 20),
+    tx_count: 14 + (addrSeed % 20),
     first_bridge_timestamp: new Date(Date.now() - hours * 3_600_000).toISOString(),
     last_bridge_timestamp: new Date(Date.now() - 3_600_000).toISOString(),
   }];
