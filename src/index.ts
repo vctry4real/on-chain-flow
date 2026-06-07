@@ -80,27 +80,59 @@ async function main(): Promise<void> {
   // Context Protocol auth middleware — verifies JWTs on protected MCP methods (tools/call)
   app.use('/mcp', createContextMiddleware());
 
-  // Stateless StreamableHTTP transport — each POST is a self-contained MCP session
+  // Session store — maps session ID → live {transport, server} pair so that
+  // initialize + tools/list + tools/call work across separate HTTP requests.
+  type Session = { transport: StreamableHTTPServerTransport; server: McpServer; lastUsed: number };
+  const sessions = new Map<string, Session>();
+
+  // Evict sessions idle for more than 30 minutes
+  setInterval(() => {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    for (const [id, s] of sessions) {
+      if (s.lastUsed < cutoff) {
+        s.transport.close().catch(() => undefined);
+        s.server.close().catch(() => undefined);
+        sessions.delete(id);
+      }
+    }
+  }, 5 * 60 * 1000).unref();
+
+  // StreamableHTTP transport with session persistence
   app.post('/mcp', async (req, res) => {
+    const incomingId = req.headers['mcp-session-id'] as string | undefined;
+
+    // Resume an existing initialized session
+    if (incomingId && sessions.has(incomingId)) {
+      const session = sessions.get(incomingId)!;
+      session.lastUsed = Date.now();
+      await session.transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    // New session — pre-generate the ID so we can store it before handleRequest fires
+    const sessionId = randomUUID();
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: () => sessionId,
     });
     const server = createMcpServer();
+    sessions.set(sessionId, { transport, server, lastUsed: Date.now() });
+
     try {
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
-    } finally {
-      res.on('close', () => {
-        transport.close().catch(() => undefined);
-        server.close().catch(() => undefined);
-      });
+    } catch (err) {
+      sessions.delete(sessionId);
+      transport.close().catch(() => undefined);
+      server.close().catch(() => undefined);
+      throw err;
     }
   });
 
   // GET /mcp — return server capabilities without authentication
   app.get('/mcp', async (req, res) => {
+    const sessionId = randomUUID();
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: () => sessionId,
     });
     const server = createMcpServer();
     await server.connect(transport);
