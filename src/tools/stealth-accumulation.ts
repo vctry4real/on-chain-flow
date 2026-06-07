@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   StealthAccumulationInput,
+  StealthAccumulationOutput,
 } from '../schemas/stealth-accumulation.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
@@ -53,10 +54,13 @@ function buildMockClusters(token_address: string, hours: number): WalletClusterR
 // ─── Tool registration ───────────────────────────────────────────────────────
 
 export function registerStealthAccumulation(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     'stealth_accumulation',
-    'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — the same intelligence Arkham Intelligence ($1,500/year) charges for, at $0.10/response.',
-    StealthAccumulationInput.shape,
+    {
+      description: 'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — the same intelligence Arkham Intelligence ($1,500/year) charges for, at $0.10/response.',
+      inputSchema:  StealthAccumulationInput.shape,
+      outputSchema: StealthAccumulationOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = StealthAccumulationInput.parse(args);

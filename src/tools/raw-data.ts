@@ -1,9 +1,9 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
-  GetWalletTransfersInput,
-  GetTokenSwapsInput,
-  GetBridgeEventsInput,
-  GetAddressLabelsInput,
+  GetWalletTransfersInput,  GetWalletTransfersOutput,
+  GetTokenSwapsInput,       GetTokenSwapsOutput,
+  GetBridgeEventsInput,     GetBridgeEventsOutput,
+  GetAddressLabelsInput,    GetAddressLabelsOutput,
 } from '../schemas/raw-data.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
@@ -42,10 +42,13 @@ function mockTransfers(address: string, chain: string, hours: number, limit: num
 export function registerRawDataTools(server: McpServer): void {
 
   // ─── get_wallet_transfers ─────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_wallet_transfers',
-    'Return normalised ERC-20 token transfer history for any wallet across supported chains. Raw building block for custom analysis — used internally by trace_capital_flow.',
-    GetWalletTransfersInput.shape,
+    {
+      description: 'Return normalised ERC-20 token transfer history for any wallet across supported chains. Raw building block for custom analysis — used internally by trace_capital_flow.',
+      inputSchema:  GetWalletTransfersInput.shape,
+      outputSchema: GetWalletTransfersOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = GetWalletTransfersInput.parse(args);
@@ -88,10 +91,13 @@ export function registerRawDataTools(server: McpServer): void {
   );
 
   // ─── get_token_swaps ─────────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_token_swaps',
-    'Return normalised DEX swap history for a token across Uniswap V3, Curve, Balancer, and 1inch. Includes per-swap trader labels and price impact — raw feed for custom accumulation analysis.',
-    GetTokenSwapsInput.shape,
+    {
+      description: 'Return normalised DEX swap history for a token across Uniswap V3, Curve, Balancer, and 1inch. Includes per-swap trader labels and price impact — raw feed for custom accumulation analysis.',
+      inputSchema:  GetTokenSwapsInput.shape,
+      outputSchema: GetTokenSwapsOutput.shape,
+    },
     async (args) => {
       try {
         const parsed  = GetTokenSwapsInput.parse(args);
@@ -163,10 +169,13 @@ export function registerRawDataTools(server: McpServer): void {
   );
 
   // ─── get_bridge_events ───────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_bridge_events',
-    'Return raw bridge transfer events for a token across Stargate, Across, and Hop Protocol. Provides the underlying transaction-level data consumed by bridge_flow_anomalies.',
-    GetBridgeEventsInput.shape,
+    {
+      description: 'Return raw bridge transfer events for a token across Stargate, Across, and Hop Protocol. Provides the underlying transaction-level data consumed by bridge_flow_anomalies.',
+      inputSchema:  GetBridgeEventsInput.shape,
+      outputSchema: GetBridgeEventsOutput.shape,
+    },
     async (args) => {
       try {
         const parsed  = GetBridgeEventsInput.parse(args);
@@ -224,10 +233,13 @@ export function registerRawDataTools(server: McpServer): void {
   );
 
   // ─── get_address_labels ──────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_address_labels',
-    'Bulk-resolve up to 50 wallet addresses against the entity label registry. Returns human-readable entity names, categories (CEX / bridge / fund / whale / mixer), and risk scores. Converts anonymous hashes into an intelligence narrative.',
-    GetAddressLabelsInput.shape,
+    {
+      description: 'Bulk-resolve up to 50 wallet addresses against the entity label registry. Returns human-readable entity names, categories (CEX / bridge / fund / whale / mixer), and risk scores. Converts anonymous hashes into an intelligence narrative.',
+      inputSchema:  GetAddressLabelsInput.shape,
+      outputSchema: GetAddressLabelsOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = GetAddressLabelsInput.parse(args);

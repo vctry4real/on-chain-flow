@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   BridgeFlowAnomaliesInput,
+  BridgeFlowAnomaliesOutput,
 } from '../schemas/bridge-anomalies.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
@@ -78,10 +79,13 @@ function buildMockBridgeRoutes(token_address: string, hours: number): BridgeRout
 // ─── Tool registration ────────────────────────────────────────────────────────
 
 export function registerBridgeFlowAnomalies(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     'bridge_flow_anomalies',
-    'Detect statistically anomalous cross-chain bridge inflows for a token. Flags volume deviations beyond configurable sigma thresholds against a rolling 30-day baseline, identifies responsible wallets, and — uniquely — correlates bridge-receiving wallets against the stealth accumulation watchlist to surface the highest-confidence pre-move signal available anywhere.',
-    BridgeFlowAnomaliesInput.shape,
+    {
+      description: 'Detect statistically anomalous cross-chain bridge inflows for a token. Flags volume deviations beyond configurable sigma thresholds against a rolling 30-day baseline, identifies responsible wallets, and — uniquely — correlates bridge-receiving wallets against the stealth accumulation watchlist to surface the highest-confidence pre-move signal available anywhere.',
+      inputSchema:  BridgeFlowAnomaliesInput.shape,
+      outputSchema: BridgeFlowAnomaliesOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = BridgeFlowAnomaliesInput.parse(args);

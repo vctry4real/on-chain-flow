@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   TraceCapitalFlowInput,
+  TraceCapitalFlowOutput,
 } from '../schemas/capital-flow.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
@@ -144,10 +145,13 @@ function buildProvenanceChain(
 // ─── Tool registration ────────────────────────────────────────────────────────
 
 export function registerTraceCapitalFlow(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     'trace_capital_flow',
-    'Walk the on-chain transaction graph backwards from any wallet address to reconstruct where its funds originated. Returns a plain-English provenance narrative, hop-by-hop breakdown, obfuscation flags, and compliance risk signals — mirroring Arkham Intelligence "mission" flow tracing and Chainalysis Reactor at $0.001/call.',
-    TraceCapitalFlowInput.shape,
+    {
+      description: 'Walk the on-chain transaction graph backwards from any wallet address to reconstruct where its funds originated. Returns a plain-English provenance narrative, hop-by-hop breakdown, obfuscation flags, and compliance risk signals — mirroring Arkham Intelligence "mission" flow tracing and Chainalysis Reactor at $0.001/call.',
+      inputSchema:  TraceCapitalFlowInput.shape,
+      outputSchema: TraceCapitalFlowOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = TraceCapitalFlowInput.parse(args);

@@ -1,8 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
-  GetSupportedChainsInput,
-  GetTrackedTokensInput,
-  BrowseByChainInput,
+  GetSupportedChainsInput,  GetSupportedChainsOutput,
+  GetTrackedTokensInput,    GetTrackedTokensOutput,
+  BrowseByChainInput,       BrowseByChainOutput,
 } from '../schemas/discovery.js';
 import { structuredError } from '../errors/codes.js';
 
@@ -144,10 +144,13 @@ function getBrowseItems(chain: string, data_type: string, limit: number) {
 export function registerDiscoveryTools(server: McpServer): void {
 
   // ─── get_supported_chains ────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_supported_chains',
-    'List all blockchain networks supported by this MCP server. Returns chain IDs, bridge/DEX coverage, and historical data availability — the entry point for any agent that needs to discover which chains to query.',
-    GetSupportedChainsInput.shape,
+    {
+      description: 'List all blockchain networks supported by this MCP server. Returns chain IDs, bridge/DEX coverage, and historical data availability — the entry point for any agent that needs to discover which chains to query.',
+      inputSchema:  GetSupportedChainsInput.shape,
+      outputSchema: GetSupportedChainsOutput.shape,
+    },
     async (args) => {
       try {
         GetSupportedChainsInput.parse(args);
@@ -164,10 +167,13 @@ export function registerDiscoveryTools(server: McpServer): void {
   );
 
   // ─── get_tracked_tokens ──────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'get_tracked_tokens',
-    'List all tokens tracked by the stealth accumulation and bridge anomaly detectors. Supports chain filtering and pagination. Use this to discover valid token_address values before calling stealth_accumulation or bridge_flow_anomalies.',
-    GetTrackedTokensInput.shape,
+    {
+      description: 'List all tokens tracked by the stealth accumulation and bridge anomaly detectors. Supports chain filtering and pagination. Use this to discover valid token_address values before calling stealth_accumulation or bridge_flow_anomalies.',
+      inputSchema:  GetTrackedTokensInput.shape,
+      outputSchema: GetTrackedTokensOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = GetTrackedTokensInput.parse(args);
@@ -188,10 +194,13 @@ export function registerDiscoveryTools(server: McpServer): void {
   );
 
   // ─── browse_by_chain ─────────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     'browse_by_chain',
-    'Browse tokens, bridges, DEXes, or top wallets for a specific chain. The universal starting point for chain-scoped research — prevents agents from missing assets by only knowing trending tokens.',
-    BrowseByChainInput.shape,
+    {
+      description: 'Browse tokens, bridges, DEXes, or top wallets for a specific chain. The universal starting point for chain-scoped research — prevents agents from missing assets by only knowing trending tokens.',
+      inputSchema:  BrowseByChainInput.shape,
+      outputSchema: BrowseByChainOutput.shape,
+    },
     async (args) => {
       try {
         const parsed = BrowseByChainInput.parse(args);
