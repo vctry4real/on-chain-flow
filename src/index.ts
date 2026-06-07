@@ -78,8 +78,9 @@ async function main(): Promise<void> {
   app.use('/mcp', express.json());
 
   // Context Protocol auth middleware — verifies JWTs for paid tool calls.
-  // Only active when CONTEXT_API_KEY is set (production). Skipped in dev/testing.
-  if (process.env['CONTEXT_API_KEY']) {
+  // Set CTX_AUTH_ENABLED=true in production (after marketplace submission).
+  // Leave unset during development and pre-submission testing.
+  if (process.env['CTX_AUTH_ENABLED'] === 'true') {
     app.use('/mcp', createContextMiddleware());
   }
 
