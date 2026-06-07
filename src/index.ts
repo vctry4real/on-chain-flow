@@ -77,8 +77,11 @@ async function main(): Promise<void> {
   // Apply JSON parsing only to MCP routes
   app.use('/mcp', express.json());
 
-  // Context Protocol auth middleware — verifies JWTs on protected MCP methods (tools/call)
-  app.use('/mcp', createContextMiddleware());
+  // Context Protocol auth middleware — verifies JWTs for paid tool calls.
+  // Only active when CONTEXT_API_KEY is set (production). Skipped in dev/testing.
+  if (process.env['CONTEXT_API_KEY']) {
+    app.use('/mcp', createContextMiddleware());
+  }
 
   // Session store — maps session ID → live {transport, server} pair so that
   // initialize + tools/list + tools/call work across separate HTTP requests.
