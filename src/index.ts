@@ -8,6 +8,7 @@ import { connectRedis } from './cache/client.js';
 import { registerAllTools } from './tools/index.js';
 import { startAccumulationScanner } from './ingest/accumulation-scanner.js';
 import { startBridgeMonitor } from './ingest/bridge-monitor.js';
+import { startProvenanceScanner } from './ingest/provenance-scanner.js';
 import { processStreamPayload, type StreamPayload } from './ingest/event-processor.js';
 import { runGraphBackfill } from './ingest/graph-backfill.js';
 
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   if (process.env['NODE_ENV'] !== 'test') {
     startAccumulationScanner();
     startBridgeMonitor();
+    startProvenanceScanner();
     // Fire-and-forget: pre-populate Redis with historical Uniswap V3 swap data
     runGraphBackfill('ethereum').catch((err) =>
       console.error('[graph-backfill] Failed:', err),

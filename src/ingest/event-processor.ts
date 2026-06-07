@@ -224,6 +224,10 @@ export async function processStreamPayload(payload: StreamPayload, chain = 'ethe
       pipeline.expire(`stream:dex_swap:${chain}:${tokenAddress}`, TTL_72H);
     }
 
+    // Active wallet index — used by nightly provenance pre-computation scanner
+    pipeline.zAdd(`active:wallets:${chain}`, { score: now, value: to });
+    pipeline.expire(`active:wallets:${chain}`, 72 * 3600);
+
     // Bridge tracking
     if (isBridge) {
       pipeline.incrByFloat(`stream:bridge_volume:${chain}:${tokenAddress}`, amount_usd);

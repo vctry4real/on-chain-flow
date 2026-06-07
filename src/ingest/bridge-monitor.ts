@@ -12,6 +12,7 @@ import cron from 'node-cron';
 import { setCache } from '../cache/helpers.js';
 import { computeZScore, zScoreToAnomalyScore, generateBridgeNarrative } from './analytics-engine.js';
 import { getBridgeVolume } from './event-processor.js';
+import { redis } from '../cache/client.js';
 
 const TRACKED_TOKENS = [
   { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', destination_chain: 'ethereum' },
@@ -20,13 +21,50 @@ const TRACKED_TOKENS = [
   { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', destination_chain: 'base' },
 ];
 
-// Production: 30-day baselines loaded from Redis time-series; here statically declared.
-const BASELINES: Record<string, { mean: number; std: number }> = {
+// Static fallback baselines — used until 7+ days of real snapshots accumulate
+const STATIC_BASELINES: Record<string, { mean: number; std: number }> = {
   '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { mean: 620_000, std: 180_000 },
   '0xdAC17F958D2ee523a2206206994597C13D831ec7': { mean: 950_000, std: 260_000 },
   '0xaf88d065e77c8cC2239327C5EDb3A432268e5831': { mean: 310_000, std: 95_000 },
   '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913': { mean: 180_000, std: 60_000 },
 };
+
+// ─── Rolling 30-day baseline ──────────────────────────────────────────────────
+
+async function saveDailySnapshot(chain: string, tokenAddress: string): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const snapshotKey = `baseline:daily:${chain}:${tokenAddress.toLowerCase()}:${today}`;
+  const already = await redis.get(snapshotKey);
+  if (already) return; // already saved today
+
+  const volume = await getBridgeVolume(chain, tokenAddress);
+  if (volume > 0) {
+    await redis.set(snapshotKey, String(volume), { EX: 32 * 24 * 3600 }); // 32-day TTL
+    console.log(`[bridge-monitor] Saved daily baseline snapshot ${tokenAddress.slice(0, 8)}… $${volume.toFixed(0)}`);
+  }
+}
+
+async function computeRollingBaseline(
+  chain: string,
+  tokenAddress: string,
+): Promise<{ mean: number; std: number } | null> {
+  const addr = tokenAddress.toLowerCase();
+  const samples: number[] = [];
+
+  for (let i = 1; i <= 30; i++) {
+    const date = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    const val  = await redis.get(`baseline:daily:${chain}:${addr}:${date}`);
+    if (val) samples.push(parseFloat(val));
+  }
+
+  if (samples.length < 7) return null; // need at least a week of data
+
+  const mean     = samples.reduce((a, b) => a + b, 0) / samples.length;
+  const variance = samples.reduce((s, v) => s + (v - mean) ** 2, 0) / samples.length;
+  const std      = Math.max(Math.sqrt(variance), mean * 0.05); // floor at 5% of mean
+
+  return { mean: parseFloat(mean.toFixed(2)), std: parseFloat(std.toFixed(2)) };
+}
 
 async function monitorToken(
   token_address: string,
@@ -42,7 +80,14 @@ async function monitorToken(
     if ((mockSeed % 100) <= 25) return;
     current_volume = 4_800_000 + (mockSeed % 1_000_000);
   }
-  const baseline = BASELINES[token_address] ?? { mean: 500_000, std: 150_000 };
+  // Save today's snapshot for tomorrow's baseline computation
+  await saveDailySnapshot(destination_chain, token_address);
+
+  // Use rolling 30-day baseline when enough history exists, otherwise fall back to static
+  const baseline =
+    (await computeRollingBaseline(destination_chain, token_address)) ??
+    STATIC_BASELINES[token_address] ??
+    { mean: 500_000, std: 150_000 };
   const z = computeZScore(current_volume, baseline.mean, baseline.std);
   const anomaly_score = zScoreToAnomalyScore(z);
 

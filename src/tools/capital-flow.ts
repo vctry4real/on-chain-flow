@@ -5,6 +5,7 @@ import {
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
 import { getWalletTransfers, resolveTokenSymbol, type TransferEvent } from '../ingest/event-processor.js';
+import { getPrecomputedProvenance } from '../ingest/provenance-scanner.js';
 
 // _meta — Context Protocol platform metadata
 export const TRACE_CAPITAL_FLOW_META = {
@@ -166,7 +167,37 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           };
         }
 
-        // Try real Redis traversal first; fall back to deterministic mock
+        // 1. Check nightly pre-computed provenance (sub-millisecond)
+        const precomputed = await getPrecomputedProvenance('ethereum', parsed.address);
+        if (precomputed && precomputed.hops.length > 0) {
+          const bridgeHops = precomputed.hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
+          const riskFlags: string[] = [];
+          if (bridgeHops.length > 2) riskFlags.push('funds passed through multiple bridge hops — potential chain-hop obfuscation');
+          if (precomputed.origin_label === 'Unknown Wallet') riskFlags.push('origin wallet has no entity label — unverified source');
+
+          const result = {
+            timestamp:                        new Date().toISOString(),
+            subject_address:                  parsed.address,
+            subject_label:                    getLabel(parsed.address),
+            hops_traced:                      precomputed.hops.length,
+            origin_address:                   precomputed.origin,
+            origin_label:                     precomputed.origin_label,
+            origin_chain:                     precomputed.hops[0]?.chain ?? 'ethereum',
+            provenance_chain:                 precomputed.hops,
+            obfuscation_techniques_detected:  bridgeHops.length > 1 ? ['bridge_hop_layering'] : [],
+            risk_flags:                       riskFlags,
+            narrative:                        `Capital tracing for ${parsed.address.slice(0, 8)}…: Origin identified as ${precomputed.origin_label}. Funds moved through ${precomputed.hops.length} hop${precomputed.hops.length !== 1 ? 's' : ''}. ${riskFlags.length > 0 ? `Risk flags: ${riskFlags.join('; ')}.` : 'No significant risk flags detected.'} (Pre-computed ${precomputed.computed_at.slice(0, 10)}.)`,
+            confidence:                       0.92,
+            path_completeness:                'full' as const,
+            data_freshness:                   'cached' as const,
+            freshness_secs:                   Math.round((Date.now() - new Date(precomputed.computed_at).getTime()) / 1000),
+            data_sources:                     ['Pre-computed nightly provenance (Redis)'],
+          };
+          await setCache(cacheKey, result, 3600);
+          return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+
+        // 2. Try live Redis traversal; fall back to deterministic mock
         const live = await traceBackward(
           parsed.address,
           parsed.max_hops,
