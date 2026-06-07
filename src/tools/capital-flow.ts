@@ -4,6 +4,7 @@ import {
 } from '../schemas/capital-flow.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
+import { getWalletTransfers, type TransferEvent } from '../ingest/event-processor.js';
 
 // _meta — Context Protocol platform metadata
 export const TRACE_CAPITAL_FLOW_META = {
@@ -35,7 +36,62 @@ function getEntityType(address: string): string {
   return LABEL_REGISTRY[address.toLowerCase()]?.entity_type ?? 'unknown';
 }
 
-// ─── Mock provenance chain (production: Neo4j 6-hop traversal) ───────────────
+// ─── Real backward traversal using Redis wallet indexes ──────────────────────
+
+type Hop = ReturnType<typeof buildProvenanceChain>['hops'][number];
+
+function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string): Hop {
+  return {
+    hop_number:       hopNumber,
+    from_address:     ev.from,
+    to_address:       toAddr,
+    from_label:       getLabel(ev.from),
+    to_label:         getLabel(toAddr),
+    amount_usd:       ev.amount_usd,
+    token_symbol:     'USDC',
+    chain:            'ethereum',
+    protocol:         ev.is_bridge ? ev.bridge_name || 'Bridge' : ev.is_dex_buy ? ev.pool : 'Ethereum transfer',
+    timestamp:        ev.timestamp,
+    tx_hash:          ev.tx_hash,
+    obfuscation_flag: ev.is_bridge ? ('bridge_hop' as const) : ('none' as const),
+  };
+}
+
+async function traceBackward(
+  address: string,
+  maxHops: number,
+  minTransferUsd: number,
+  includeBridgeHops: boolean,
+): Promise<{ hops: Hop[]; origin: string }> {
+  const hops: Hop[]     = [];
+  let current           = address.toLowerCase();
+  const visited         = new Set<string>();
+
+  for (let i = 0; i < maxHops; i++) {
+    if (visited.has(current)) break;
+    visited.add(current);
+
+    const inbound = await getWalletTransfers('ethereum', current, 168, 'in');
+    if (inbound.length === 0) break;
+
+    // Pick the largest qualifying incoming transfer
+    const candidates = inbound.filter(
+      (e) => e.amount_usd >= minTransferUsd && (includeBridgeHops || !e.is_bridge),
+    );
+    if (candidates.length === 0) break;
+
+    const largest = candidates.reduce((best, ev) => ev.amount_usd > best.amount_usd ? ev : best);
+    hops.push(buildHopFromEvent(i + 1, largest, current));
+    current = largest.from;
+
+    // Stop at a known labelled entity (CEX, bridge contract, etc.)
+    if (LABEL_REGISTRY[current]) break;
+  }
+
+  return { hops: hops.reverse(), origin: current };
+}
+
+// ─── Mock provenance chain (fallback when no Redis data) ─────────────────────
 
 function buildProvenanceChain(
   address: string,
@@ -110,12 +166,16 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           };
         }
 
-        const { hops, origin } = buildProvenanceChain(
+        // Try real Redis traversal first; fall back to deterministic mock
+        const live = await traceBackward(
           parsed.address,
           parsed.max_hops,
-          parsed.include_bridge_hops,
           parsed.min_transfer_usd,
+          parsed.include_bridge_hops,
         );
+        const { hops, origin } = live.hops.length > 0
+          ? live
+          : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd);
 
         const bridgeHops = hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
         const obfuscationDetected = bridgeHops.length > 1;

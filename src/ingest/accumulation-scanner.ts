@@ -10,7 +10,7 @@
 import cron from 'node-cron';
 import { setCache } from '../cache/helpers.js';
 import { scoreAccumulationCluster, type WalletClusterRaw } from './analytics-engine.js';
-import { getTransferEvents } from './event-processor.js';
+import { getTransferEvents, getFundingSource } from './event-processor.js';
 
 // Production: these token addresses come from the tracked-token registry.
 // For smoke testing, we use the same seed-based deterministic set.
@@ -25,37 +25,60 @@ async function buildClustersFromStream(token_address: string, chain: string, hou
   const events = await getTransferEvents(chain, token_address, hours);
   if (events.length < 3) return [];
 
-  // Group by wallet and sum buy amounts
+  // Group by recipient wallet
   const walletMap = new Map<string, typeof events>();
   for (const ev of events) {
-    const list = walletMap.get(ev.wallet) ?? [];
+    const list = walletMap.get(ev.to) ?? [];
     list.push(ev);
-    walletMap.set(ev.wallet, list);
+    walletMap.set(ev.to, list);
   }
 
-  // Only keep wallets with at least 2 buys or a single buy > $50k
+  // Keep wallets with multiple buys or a single large buy
   const active = [...walletMap.entries()].filter(
     ([, evs]) => evs.length >= 2 || (evs[0]?.amount_usd ?? 0) >= 50_000,
   );
   if (active.length < 2) return [];
 
-  const wallets = active.map(([addr]) => addr);
-  const buys = active.flatMap(([, evs]) =>
-    evs.map((ev) => ({
-      wallet: ev.wallet,
-      amount_usd: ev.amount_usd,
-      pool: 'Uniswap V3',          // pool resolution requires separate lookup
-      timestamp: ev.timestamp,
-      price_impact_pct: 0.10,      // conservative default; real value needs DEX data
-    })),
+  // Real common-origin detection: look up each wallet's 1-hop funding source from Redis
+  const funderMap = new Map<string, string[]>();
+  await Promise.all(
+    active.map(async ([addr]) => {
+      const funder = (await getFundingSource(chain, addr)) ?? 'unknown';
+      const group  = funderMap.get(funder) ?? [];
+      group.push(addr);
+      funderMap.set(funder, group);
+    }),
   );
 
-  return [{
-    wallets,
-    common_origin: 'unknown',      // common-origin graph analysis requires Neo4j
-    origin_label: 'Unknown',
-    buys,
-  }];
+  const clusters: WalletClusterRaw[] = [];
+
+  for (const [funder, wallets] of funderMap.entries()) {
+    // Skip isolated unknown-origin wallets — no clustering signal
+    if (wallets.length < 2 && funder === 'unknown') continue;
+
+    const buys = wallets.flatMap((addr) =>
+      (walletMap.get(addr) ?? []).map((ev) => ({
+        wallet:           ev.to,
+        amount_usd:       ev.amount_usd,
+        pool:             ev.pool !== 'Direct' ? ev.pool : 'Uniswap V3',
+        timestamp:        ev.timestamp,
+        price_impact_pct: ev.price_impact_pct > 0 ? ev.price_impact_pct : 0.10,
+      })),
+    );
+
+    if (buys.length < 2) continue;
+
+    clusters.push({
+      wallets,
+      common_origin: funder,
+      origin_label:  funder === 'unknown'
+        ? 'Unknown'
+        : `Funding wallet ${funder.slice(0, 8)}…`,
+      buys,
+    });
+  }
+
+  return clusters;
 }
 
 async function scanToken(token_address: string, chain: string, hours: number): Promise<void> {

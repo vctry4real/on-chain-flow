@@ -7,6 +7,11 @@ import {
 } from '../schemas/raw-data.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
+import {
+  getWalletTransfers,
+  getTokenSwaps as getTokenSwapsFromRedis,
+  getBridgeEvents as getBridgeEventsFromRedis,
+} from '../ingest/event-processor.js';
 
 const LABEL_REGISTRY: Record<string, { label: string; entity_type: 'cex' | 'dex' | 'bridge' | 'fund' | 'whale' | 'mixer' | 'unknown'; tags: string[]; risk_score: number }> = {
   '0xd8da6bf26964af9d7eed9e03e53415d37aa96045': { label: 'Vitalik Buterin', entity_type: 'whale', tags: ['ethereum-founder'], risk_score: 0.0 },
@@ -47,14 +52,31 @@ export function registerRawDataTools(server: McpServer): void {
         const cached   = await getCached(cacheKey);
         if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
 
-        const transfers = mockTransfers(parsed.address, parsed.chain, parsed.hours, parsed.limit);
+        // Try real stream data first
+        const liveEvents = await getWalletTransfers(parsed.chain, parsed.address, parsed.hours);
+        const sourceEvents = liveEvents.length > 0
+          ? liveEvents.slice(0, parsed.limit).map((ev) => ({
+              tx_hash:       ev.tx_hash,
+              block_number:  0,
+              timestamp:     ev.timestamp,
+              from:          ev.from,
+              to:            ev.to,
+              token_address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+              token_symbol:  'USDC',
+              amount_raw:    String(Math.round(ev.amount_usd * 1e6)),
+              amount_usd:    ev.amount_usd,
+              protocol:      ev.is_bridge ? 'Bridge transfer' : ev.is_dex_buy ? ev.pool : 'ERC-20 transfer',
+              direction:     (ev.to.toLowerCase() === parsed.address.toLowerCase() ? 'in' : 'out') as 'in' | 'out',
+            }))
+          : mockTransfers(parsed.address, parsed.chain, parsed.hours, parsed.limit);
+
         const result = {
-          address: parsed.address,
-          chain: parsed.chain,
-          transfers,
-          total_count: transfers.length,
-          data_freshness: 'fresh' as const,
-          fetched_at: new Date().toISOString(),
+          address:        parsed.address,
+          chain:          parsed.chain,
+          transfers:      sourceEvents,
+          total_count:    sourceEvents.length,
+          data_freshness: liveEvents.length > 0 ? 'fresh' as const : 'cached' as const,
+          fetched_at:     new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -76,25 +98,43 @@ export function registerRawDataTools(server: McpServer): void {
         const cached   = await getCached(cacheKey);
         if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
 
-        const seed = parseInt(parsed.token_address.slice(2, 10), 16);
-        const count = Math.min(parsed.limit, 15 + (seed % 30));
+        const liveSwaps = await getTokenSwapsFromRedis(parsed.chain, parsed.token_address, parsed.hours);
+
+        const seed  = parseInt(parsed.token_address.slice(2, 10), 16);
         const dexes = ['Uniswap V3', 'Curve', 'Balancer', '1inch'];
-        const swaps = Array.from({ length: count }, (_, i) => {
-          const side = (i % 3 === 2 ? 'sell' : 'buy') as 'buy' | 'sell';
-          const amount_usd = 5_000 + (i * 3_500) + (seed % 10_000);
-          return {
-            tx_hash:         `0x${(seed * (i + 10)).toString(16).padStart(64, '0')}`.slice(0, 66),
-            timestamp:        new Date(Date.now() - i * 3_600_000).toISOString(),
-            trader:           `0x${(seed + i * 7).toString(16).padStart(40, 'a')}`.slice(0, 42),
-            trader_label:     i === 0 ? 'Coinbase Hot Wallet' : 'Unknown Wallet',
-            dex:              dexes[i % 4] ?? 'Uniswap V3',
-            pool_address:     `0x${(seed + i).toString(16).padStart(40, 'p')}`.slice(0, 42),
-            side,
-            amount_token:     parseFloat((amount_usd / 1.0).toFixed(2)),
-            amount_usd,
-            price_impact_pct: parseFloat((0.05 + i * 0.01).toFixed(3)),
-          };
-        });
+
+        const swaps = liveSwaps.length > 0
+          ? liveSwaps
+              .filter((s) => parsed.dex === 'all' || s.dex.toLowerCase().replace(/\s+/g, '_') === parsed.dex)
+              .slice(0, parsed.limit)
+              .map((s) => ({
+                tx_hash:          s.tx_hash,
+                timestamp:        s.timestamp,
+                trader:           s.trader,
+                trader_label:     LABEL_REGISTRY[s.trader.toLowerCase()]?.label ?? 'Unknown Wallet',
+                dex:              s.dex,
+                pool_address:     s.pool_address,
+                side:             s.side,
+                amount_token:     parseFloat(s.amount_usd.toFixed(2)),
+                amount_usd:       s.amount_usd,
+                price_impact_pct: s.price_impact_pct,
+              }))
+          : Array.from({ length: Math.min(parsed.limit, 15 + (seed % 30)) }, (_, i) => {
+              const side = (i % 3 === 2 ? 'sell' : 'buy') as 'buy' | 'sell';
+              const amount_usd = 5_000 + (i * 3_500) + (seed % 10_000);
+              return {
+                tx_hash:          `0x${(seed * (i + 10)).toString(16).padStart(64, '0')}`.slice(0, 66),
+                timestamp:        new Date(Date.now() - i * 3_600_000).toISOString(),
+                trader:           `0x${(seed + i * 7).toString(16).padStart(40, 'a')}`.slice(0, 42),
+                trader_label:     i === 0 ? 'Coinbase Hot Wallet' : 'Unknown Wallet',
+                dex:              dexes[i % 4] ?? 'Uniswap V3',
+                pool_address:     `0x${(seed + i).toString(16).padStart(40, '0')}`.slice(0, 42),
+                side,
+                amount_token:     parseFloat(amount_usd.toFixed(2)),
+                amount_usd,
+                price_impact_pct: parseFloat((0.05 + i * 0.01).toFixed(3)),
+              };
+            });
 
         const buys  = swaps.filter((s) => s.side === 'buy');
         const sells = swaps.filter((s) => s.side === 'sell');
@@ -102,16 +142,16 @@ export function registerRawDataTools(server: McpServer): void {
         const total_sell_volume_usd = sells.reduce((s, sw) => s + sw.amount_usd, 0);
 
         const result = {
-          token_address: parsed.token_address,
-          token_symbol: 'USDC',
-          chain: parsed.chain,
+          token_address:         parsed.token_address,
+          token_symbol:          'USDC',
+          chain:                 parsed.chain,
           swaps,
           total_buy_volume_usd,
           total_sell_volume_usd,
-          net_flow_usd: total_buy_volume_usd - total_sell_volume_usd,
-          total_count: swaps.length,
-          data_freshness: 'fresh' as const,
-          fetched_at: new Date().toISOString(),
+          net_flow_usd:          total_buy_volume_usd - total_sell_volume_usd,
+          total_count:           swaps.length,
+          data_freshness:        liveSwaps.length > 0 ? 'fresh' as const : 'cached' as const,
+          fetched_at:            new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -133,20 +173,36 @@ export function registerRawDataTools(server: McpServer): void {
         const cached   = await getCached(cacheKey);
         if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
 
-        const seed = parseInt(parsed.token_address.slice(2, 10), 16);
+        const liveBridge = await getBridgeEventsFromRedis(
+          parsed.destination_chain, parsed.token_address, parsed.hours,
+        );
+
+        const seed    = parseInt(parsed.token_address.slice(2, 10), 16);
         const bridges = ['Stargate', 'Across', 'Hop Protocol'];
         const chains  = ['arbitrum', 'base', 'optimism'];
-        const count = Math.min(parsed.limit, 6 + (seed % 12));
 
-        const events = Array.from({ length: count }, (_, i) => ({
-          tx_hash:      `0x${(seed * (i + 100)).toString(16).padStart(64, '0')}`.slice(0, 66),
-          timestamp:    new Date(Date.now() - i * 2_400_000).toISOString(),
-          bridge:       bridges[i % 3] ?? 'Stargate',
-          source_chain: chains[i % 3] ?? 'arbitrum',
-          sender:       `0x${(seed + i * 3).toString(16).padStart(40, 'b')}`.slice(0, 42),
-          recipient:    `0x${(seed + i * 5).toString(16).padStart(40, 'c')}`.slice(0, 42),
-          amount_usd:   200_000 + i * 80_000,
-        }));
+        const events = liveBridge.length > 0
+          ? liveBridge
+              .filter((e) => parsed.bridge === 'all' || e.bridge_name.toLowerCase() === parsed.bridge)
+              .slice(0, parsed.limit)
+              .map((e) => ({
+                tx_hash:      e.tx_hash,
+                timestamp:    e.timestamp,
+                bridge:       e.bridge_name || 'Bridge',
+                source_chain: 'unknown',
+                sender:       e.from,
+                recipient:    e.to,
+                amount_usd:   e.amount_usd,
+              }))
+          : Array.from({ length: Math.min(parsed.limit, 6 + (seed % 12)) }, (_, i) => ({
+              tx_hash:      `0x${(seed * (i + 100)).toString(16).padStart(64, '0')}`.slice(0, 66),
+              timestamp:    new Date(Date.now() - i * 2_400_000).toISOString(),
+              bridge:       bridges[i % 3] ?? 'Stargate',
+              source_chain: chains[i % 3] ?? 'arbitrum',
+              sender:       `0x${(seed + i * 3).toString(16).padStart(40, 'b')}`.slice(0, 42),
+              recipient:    `0x${(seed + i * 5).toString(16).padStart(40, 'c')}`.slice(0, 42),
+              amount_usd:   200_000 + i * 80_000,
+            }));
 
         const result = {
           token_address:     parsed.token_address,
@@ -155,7 +211,7 @@ export function registerRawDataTools(server: McpServer): void {
           events,
           total_volume_usd:  events.reduce((s, e) => s + e.amount_usd, 0),
           total_count:       events.length,
-          data_freshness:    'fresh' as const,
+          data_freshness:    liveBridge.length > 0 ? 'fresh' as const : 'cached' as const,
           fetched_at:        new Date().toISOString(),
         };
         await setCache(cacheKey, result, 120);
