@@ -10,6 +10,7 @@ import {
   CLASSIFIER_VERSION,
   type WalletClusterRaw,
 } from '../ingest/analytics-engine.js';
+import { resolveTokenSymbol } from '../ingest/event-processor.js';
 
 // _meta — Context Protocol platform metadata (pricing, rate-limits, audit fields)
 // Ref: https://docs.ctxprotocol.com/guides/tool-metadata
@@ -109,7 +110,7 @@ export function registerStealthAccumulation(server: McpServer): void {
         const result = {
           timestamp:          new Date().toISOString(),
           token_address:      parsed.token_address,
-          token_symbol:       'USDC',
+          token_symbol:       resolveTokenSymbol(parsed.token_address),
           chain:              parsed.chain,
           window_hours:       parsed.hours,
           classifier_version: CLASSIFIER_VERSION,

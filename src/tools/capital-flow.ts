@@ -4,7 +4,7 @@ import {
 } from '../schemas/capital-flow.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
-import { getWalletTransfers, type TransferEvent } from '../ingest/event-processor.js';
+import { getWalletTransfers, resolveTokenSymbol, type TransferEvent } from '../ingest/event-processor.js';
 
 // _meta — Context Protocol platform metadata
 export const TRACE_CAPITAL_FLOW_META = {
@@ -48,7 +48,7 @@ function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string)
     from_label:       getLabel(ev.from),
     to_label:         getLabel(toAddr),
     amount_usd:       ev.amount_usd,
-    token_symbol:     'USDC',
+    token_symbol:     resolveTokenSymbol(ev.token),
     chain:            'ethereum',
     protocol:         ev.is_bridge ? ev.bridge_name || 'Bridge' : ev.is_dex_buy ? ev.pool : 'Ethereum transfer',
     timestamp:        ev.timestamp,

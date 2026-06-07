@@ -5,6 +5,7 @@ import {
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
 import { computeZScore, zScoreToAnomalyScore, generateBridgeNarrative } from '../ingest/analytics-engine.js';
+import { resolveTokenSymbol } from '../ingest/event-processor.js';
 
 // _meta — Context Protocol platform metadata
 export const BRIDGE_FLOW_ANOMALIES_META = {
@@ -143,7 +144,7 @@ export function registerBridgeFlowAnomalies(server: McpServer): void {
         const result = {
           timestamp:                 new Date().toISOString(),
           token_address:             parsed.token_address,
-          token_symbol:              'USDC',
+          token_symbol:              resolveTokenSymbol(parsed.token_address),
           destination_chain:         parsed.destination_chain,
           window_hours:              parsed.hours,
           verdict,

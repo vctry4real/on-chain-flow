@@ -11,6 +11,7 @@ import {
   getWalletTransfers,
   getTokenSwaps as getTokenSwapsFromRedis,
   getBridgeEvents as getBridgeEventsFromRedis,
+  resolveTokenSymbol,
 } from '../ingest/event-processor.js';
 
 const LABEL_REGISTRY: Record<string, { label: string; entity_type: 'cex' | 'dex' | 'bridge' | 'fund' | 'whale' | 'mixer' | 'unknown'; tags: string[]; risk_score: number }> = {
@@ -61,8 +62,8 @@ export function registerRawDataTools(server: McpServer): void {
               timestamp:     ev.timestamp,
               from:          ev.from,
               to:            ev.to,
-              token_address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-              token_symbol:  'USDC',
+              token_address: ev.token,
+              token_symbol:  resolveTokenSymbol(ev.token),
               amount_raw:    String(Math.round(ev.amount_usd * 1e6)),
               amount_usd:    ev.amount_usd,
               protocol:      ev.is_bridge ? 'Bridge transfer' : ev.is_dex_buy ? ev.pool : 'ERC-20 transfer',
@@ -143,7 +144,7 @@ export function registerRawDataTools(server: McpServer): void {
 
         const result = {
           token_address:         parsed.token_address,
-          token_symbol:          'USDC',
+          token_symbol:          resolveTokenSymbol(parsed.token_address),
           chain:                 parsed.chain,
           swaps,
           total_buy_volume_usd,
@@ -206,7 +207,7 @@ export function registerRawDataTools(server: McpServer): void {
 
         const result = {
           token_address:     parsed.token_address,
-          token_symbol:      'USDC',
+          token_symbol:      resolveTokenSymbol(parsed.token_address),
           destination_chain: parsed.destination_chain,
           events,
           total_volume_usd:  events.reduce((s, e) => s + e.amount_usd, 0),
