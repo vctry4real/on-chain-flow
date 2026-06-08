@@ -1,4 +1,4 @@
-import { GetSupportedChainsInput, GetTrackedTokensInput, BrowseByChainInput, } from '../schemas/discovery.js';
+import { GetSupportedChainsInput, GetSupportedChainsOutput, GetTrackedTokensInput, GetTrackedTokensOutput, BrowseByChainInput, BrowseByChainOutput, } from '../schemas/discovery.js';
 import { structuredError } from '../errors/codes.js';
 // ─── Static chain registry ─────────────────────────────────────────────────
 const CHAINS = [
@@ -127,7 +127,11 @@ function getBrowseItems(chain, data_type, limit) {
 // ─── Tool registration ─────────────────────────────────────────────────────
 export function registerDiscoveryTools(server) {
     // ─── get_supported_chains ────────────────────────────────────────────────
-    server.tool('get_supported_chains', 'List all blockchain networks supported by this MCP server. Returns chain IDs, bridge/DEX coverage, and historical data availability — the entry point for any agent that needs to discover which chains to query.', GetSupportedChainsInput.shape, async (args) => {
+    server.registerTool('get_supported_chains', {
+        description: 'List all blockchain networks supported by this MCP server. Returns chain IDs, bridge/DEX coverage, and historical data availability — the entry point for any agent that needs to discover which chains to query.',
+        inputSchema: GetSupportedChainsInput.shape,
+        outputSchema: GetSupportedChainsOutput.shape,
+    }, async (args) => {
         try {
             GetSupportedChainsInput.parse(args);
             const result = {
@@ -135,14 +139,18 @@ export function registerDiscoveryTools(server) {
                 total_count: CHAINS.length,
                 fetched_at: new Date().toISOString(),
             };
-            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
         }
         catch (err) {
             return structuredError('SCHEMA_VALIDATION_FAIL', `get_supported_chains failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     });
     // ─── get_tracked_tokens ──────────────────────────────────────────────────
-    server.tool('get_tracked_tokens', 'List all tokens tracked by the stealth accumulation and bridge anomaly detectors. Supports chain filtering and pagination. Use this to discover valid token_address values before calling stealth_accumulation or bridge_flow_anomalies.', GetTrackedTokensInput.shape, async (args) => {
+    server.registerTool('get_tracked_tokens', {
+        description: 'List all tokens tracked by the stealth accumulation and bridge anomaly detectors. Supports chain filtering and pagination. Use this to discover valid token_address values before calling stealth_accumulation or bridge_flow_anomalies.',
+        inputSchema: GetTrackedTokensInput.shape,
+        outputSchema: GetTrackedTokensOutput.shape,
+    }, async (args) => {
         try {
             const parsed = GetTrackedTokensInput.parse(args);
             const filtered = parsed.chain === 'all'
@@ -154,14 +162,18 @@ export function registerDiscoveryTools(server) {
                 total_count: filtered.length,
                 fetched_at: new Date().toISOString(),
             };
-            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
         }
         catch (err) {
             return structuredError('SCHEMA_VALIDATION_FAIL', `get_tracked_tokens failed: ${err instanceof Error ? err.message : String(err)}`);
         }
     });
     // ─── browse_by_chain ─────────────────────────────────────────────────────
-    server.tool('browse_by_chain', 'Browse tokens, bridges, DEXes, or top wallets for a specific chain. The universal starting point for chain-scoped research — prevents agents from missing assets by only knowing trending tokens.', BrowseByChainInput.shape, async (args) => {
+    server.registerTool('browse_by_chain', {
+        description: 'Browse tokens, bridges, DEXes, or top wallets for a specific chain. The universal starting point for chain-scoped research — prevents agents from missing assets by only knowing trending tokens.',
+        inputSchema: BrowseByChainInput.shape,
+        outputSchema: BrowseByChainOutput.shape,
+    }, async (args) => {
         try {
             const parsed = BrowseByChainInput.parse(args);
             const items = getBrowseItems(parsed.chain, parsed.data_type, parsed.limit);
@@ -172,7 +184,7 @@ export function registerDiscoveryTools(server) {
                 total_count: items.length,
                 fetched_at: new Date().toISOString(),
             };
-            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
         }
         catch (err) {
             return structuredError('SCHEMA_VALIDATION_FAIL', `browse_by_chain failed: ${err instanceof Error ? err.message : String(err)}`);

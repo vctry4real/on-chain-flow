@@ -94,9 +94,8 @@ export function registerBridgeFlowAnomalies(server: McpServer): void {
         const cached = await getCached(cacheKey);
         if (cached) {
           return {
-            content: [
-              { type: 'text', text: JSON.stringify(cached) },
-            ],
+            content: [{ type: 'text', text: JSON.stringify(cached) }],
+            structuredContent: cached as Record<string, unknown>,
           };
         }
 
@@ -179,9 +178,8 @@ export function registerBridgeFlowAnomalies(server: McpServer): void {
         await setCache(cacheKey, result, 120);
 
         return {
-          content: [
-            { type: 'text', text: JSON.stringify(result) },
-          ],
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          structuredContent: result,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

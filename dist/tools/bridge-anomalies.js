@@ -1,7 +1,8 @@
-import { BridgeFlowAnomaliesInput, } from '../schemas/bridge-anomalies.js';
+import { BridgeFlowAnomaliesInput, BridgeFlowAnomaliesOutput, } from '../schemas/bridge-anomalies.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
 import { computeZScore, zScoreToAnomalyScore, generateBridgeNarrative } from '../ingest/analytics-engine.js';
+import { resolveTokenSymbol } from '../ingest/event-processor.js';
 // _meta — Context Protocol platform metadata
 export const BRIDGE_FLOW_ANOMALIES_META = {
     surface: 'both',
@@ -53,16 +54,19 @@ function buildMockBridgeRoutes(token_address, hours) {
 }
 // ─── Tool registration ────────────────────────────────────────────────────────
 export function registerBridgeFlowAnomalies(server) {
-    server.tool('bridge_flow_anomalies', 'Detect statistically anomalous cross-chain bridge inflows for a token. Flags volume deviations beyond configurable sigma thresholds against a rolling 30-day baseline, identifies responsible wallets, and — uniquely — correlates bridge-receiving wallets against the stealth accumulation watchlist to surface the highest-confidence pre-move signal available anywhere.', BridgeFlowAnomaliesInput.shape, async (args) => {
+    server.registerTool('bridge_flow_anomalies', {
+        description: 'Detect statistically anomalous cross-chain bridge inflows for a token. Flags volume deviations beyond configurable sigma thresholds against a rolling 30-day baseline, identifies responsible wallets, and — uniquely — correlates bridge-receiving wallets against the stealth accumulation watchlist to surface the highest-confidence pre-move signal available anywhere.',
+        inputSchema: BridgeFlowAnomaliesInput.shape,
+        outputSchema: BridgeFlowAnomaliesOutput.shape,
+    }, async (args) => {
         try {
             const parsed = BridgeFlowAnomaliesInput.parse(args);
             const cacheKey = `bridge:${parsed.destination_chain}:${parsed.token_address.toLowerCase()}:${parsed.hours}`;
             const cached = await getCached(cacheKey);
             if (cached) {
                 return {
-                    content: [
-                        { type: 'text', text: JSON.stringify(cached) },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify(cached) }],
+                    structuredContent: cached,
                 };
             }
             const rawRoutes = buildMockBridgeRoutes(parsed.token_address, parsed.hours);
@@ -97,7 +101,7 @@ export function registerBridgeFlowAnomalies(server) {
             const result = {
                 timestamp: new Date().toISOString(),
                 token_address: parsed.token_address,
-                token_symbol: 'USDC',
+                token_symbol: resolveTokenSymbol(parsed.token_address),
                 destination_chain: parsed.destination_chain,
                 window_hours: parsed.hours,
                 verdict,
@@ -120,9 +124,8 @@ export function registerBridgeFlowAnomalies(server) {
             };
             await setCache(cacheKey, result, 120);
             return {
-                content: [
-                    { type: 'text', text: JSON.stringify(result) },
-                ],
+                content: [{ type: 'text', text: JSON.stringify(result) }],
+                structuredContent: result,
             };
         }
         catch (err) {

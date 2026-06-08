@@ -54,7 +54,7 @@ export function registerRawDataTools(server: McpServer): void {
         const parsed = GetWalletTransfersInput.parse(args);
         const cacheKey = `transfers:${parsed.chain}:${parsed.address.toLowerCase()}:${parsed.hours}`;
         const cached   = await getCached(cacheKey);
-        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }], structuredContent: cached as Record<string, unknown> };
 
         // Try real stream data first
         const liveEvents = await getWalletTransfers(parsed.chain, parsed.address, parsed.hours);
@@ -83,7 +83,7 @@ export function registerRawDataTools(server: McpServer): void {
           fetched_at:     new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_wallet_transfers failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -103,7 +103,7 @@ export function registerRawDataTools(server: McpServer): void {
         const parsed  = GetTokenSwapsInput.parse(args);
         const cacheKey = `swaps:${parsed.chain}:${parsed.token_address.toLowerCase()}:${parsed.hours}:${parsed.dex}`;
         const cached   = await getCached(cacheKey);
-        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }], structuredContent: cached as Record<string, unknown> };
 
         const liveSwaps = await getTokenSwapsFromRedis(parsed.chain, parsed.token_address, parsed.hours);
 
@@ -161,7 +161,7 @@ export function registerRawDataTools(server: McpServer): void {
           fetched_at:            new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_token_swaps failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -181,7 +181,7 @@ export function registerRawDataTools(server: McpServer): void {
         const parsed  = GetBridgeEventsInput.parse(args);
         const cacheKey = `bridge-raw:${parsed.destination_chain}:${parsed.token_address.toLowerCase()}:${parsed.hours}:${parsed.bridge}`;
         const cached   = await getCached(cacheKey);
-        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }] };
+        if (cached) return { content: [{ type: 'text', text: JSON.stringify(cached) }], structuredContent: cached as Record<string, unknown> };
 
         const liveBridge = await getBridgeEventsFromRedis(
           parsed.destination_chain, parsed.token_address, parsed.hours,
@@ -225,7 +225,7 @@ export function registerRawDataTools(server: McpServer): void {
           fetched_at:        new Date().toISOString(),
         };
         await setCache(cacheKey, result, 120);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_bridge_events failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -257,7 +257,7 @@ export function registerRawDataTools(server: McpServer): void {
           data_freshness: 'fresh' as const,
           fetched_at:     new Date().toISOString(),
         };
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_address_labels failed: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -1,6 +1,8 @@
-import { TraceCapitalFlowInput, } from '../schemas/capital-flow.js';
+import { TraceCapitalFlowInput, TraceCapitalFlowOutput, } from '../schemas/capital-flow.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
+import { getWalletTransfers, resolveTokenSymbol } from '../ingest/event-processor.js';
+import { getPrecomputedProvenance } from '../ingest/provenance-scanner.js';
 // _meta — Context Protocol platform metadata
 export const TRACE_CAPITAL_FLOW_META = {
     surface: 'both',
@@ -26,7 +28,47 @@ function getLabel(address) {
 function getEntityType(address) {
     return LABEL_REGISTRY[address.toLowerCase()]?.entity_type ?? 'unknown';
 }
-// ─── Mock provenance chain (production: Neo4j 6-hop traversal) ───────────────
+function buildHopFromEvent(hopNumber, ev, toAddr) {
+    return {
+        hop_number: hopNumber,
+        from_address: ev.from,
+        to_address: toAddr,
+        from_label: getLabel(ev.from),
+        to_label: getLabel(toAddr),
+        amount_usd: ev.amount_usd,
+        token_symbol: resolveTokenSymbol(ev.token),
+        chain: 'ethereum',
+        protocol: ev.is_bridge ? ev.bridge_name || 'Bridge' : ev.is_dex_buy ? ev.pool : 'Ethereum transfer',
+        timestamp: ev.timestamp,
+        tx_hash: ev.tx_hash,
+        obfuscation_flag: ev.is_bridge ? 'bridge_hop' : 'none',
+    };
+}
+async function traceBackward(address, maxHops, minTransferUsd, includeBridgeHops) {
+    const hops = [];
+    let current = address.toLowerCase();
+    const visited = new Set();
+    for (let i = 0; i < maxHops; i++) {
+        if (visited.has(current))
+            break;
+        visited.add(current);
+        const inbound = await getWalletTransfers('ethereum', current, 168, 'in');
+        if (inbound.length === 0)
+            break;
+        // Pick the largest qualifying incoming transfer
+        const candidates = inbound.filter((e) => e.amount_usd >= minTransferUsd && (includeBridgeHops || !e.is_bridge));
+        if (candidates.length === 0)
+            break;
+        const largest = candidates.reduce((best, ev) => ev.amount_usd > best.amount_usd ? ev : best);
+        hops.push(buildHopFromEvent(i + 1, largest, current));
+        current = largest.from;
+        // Stop at a known labelled entity (CEX, bridge contract, etc.)
+        if (LABEL_REGISTRY[current])
+            break;
+    }
+    return { hops: hops.reverse(), origin: current };
+}
+// ─── Mock provenance chain (fallback when no Redis data) ─────────────────────
 function buildProvenanceChain(address, max_hops, include_bridge_hops, min_transfer_usd) {
     const seed = parseInt(address.slice(2, 10), 16);
     const hopCount = Math.min(max_hops, 3 + (seed % 4));
@@ -64,7 +106,11 @@ function buildProvenanceChain(address, max_hops, include_bridge_hops, min_transf
 }
 // ─── Tool registration ────────────────────────────────────────────────────────
 export function registerTraceCapitalFlow(server) {
-    server.tool('trace_capital_flow', 'Walk the on-chain transaction graph backwards from any wallet address to reconstruct where its funds originated. Returns a plain-English provenance narrative, hop-by-hop breakdown, obfuscation flags, and compliance risk signals — mirroring Arkham Intelligence "mission" flow tracing and Chainalysis Reactor at $0.001/call.', TraceCapitalFlowInput.shape, async (args) => {
+    server.registerTool('trace_capital_flow', {
+        description: 'Walk the on-chain transaction graph backwards from any wallet address to reconstruct where its funds originated. Returns a plain-English provenance narrative, hop-by-hop breakdown, obfuscation flags, and compliance risk signals — mirroring Arkham Intelligence "mission" flow tracing and Chainalysis Reactor at $0.001/call.',
+        inputSchema: TraceCapitalFlowInput.shape,
+        outputSchema: TraceCapitalFlowOutput.shape,
+    }, async (args) => {
         try {
             const parsed = TraceCapitalFlowInput.parse(args);
             if (!/^0x[0-9a-fA-F]{40}$/.test(parsed.address)) {
@@ -74,12 +120,45 @@ export function registerTraceCapitalFlow(server) {
             const cached = await getCached(cacheKey);
             if (cached) {
                 return {
-                    content: [
-                        { type: 'text', text: JSON.stringify(cached) },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify(cached) }],
+                    structuredContent: cached,
                 };
             }
-            const { hops, origin } = buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd);
+            // 1. Check nightly pre-computed provenance (sub-millisecond)
+            const precomputed = await getPrecomputedProvenance('ethereum', parsed.address);
+            if (precomputed && precomputed.hops.length > 0) {
+                const bridgeHops = precomputed.hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
+                const riskFlags = [];
+                if (bridgeHops.length > 2)
+                    riskFlags.push('funds passed through multiple bridge hops — potential chain-hop obfuscation');
+                if (precomputed.origin_label === 'Unknown Wallet')
+                    riskFlags.push('origin wallet has no entity label — unverified source');
+                const result = {
+                    timestamp: new Date().toISOString(),
+                    subject_address: parsed.address,
+                    subject_label: getLabel(parsed.address),
+                    hops_traced: precomputed.hops.length,
+                    origin_address: precomputed.origin,
+                    origin_label: precomputed.origin_label,
+                    origin_chain: precomputed.hops[0]?.chain ?? 'ethereum',
+                    provenance_chain: precomputed.hops,
+                    obfuscation_techniques_detected: bridgeHops.length > 1 ? ['bridge_hop_layering'] : [],
+                    risk_flags: riskFlags,
+                    narrative: `Capital tracing for ${parsed.address.slice(0, 8)}…: Origin identified as ${precomputed.origin_label}. Funds moved through ${precomputed.hops.length} hop${precomputed.hops.length !== 1 ? 's' : ''}. ${riskFlags.length > 0 ? `Risk flags: ${riskFlags.join('; ')}.` : 'No significant risk flags detected.'} (Pre-computed ${precomputed.computed_at.slice(0, 10)}.)`,
+                    confidence: 0.92,
+                    path_completeness: 'full',
+                    data_freshness: 'cached',
+                    freshness_secs: Math.round((Date.now() - new Date(precomputed.computed_at).getTime()) / 1000),
+                    data_sources: ['Pre-computed nightly provenance (Redis)'],
+                };
+                await setCache(cacheKey, result, 3600);
+                return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+            }
+            // 2. Try live Redis traversal; fall back to deterministic mock
+            const live = await traceBackward(parsed.address, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
+            const { hops, origin } = live.hops.length > 0
+                ? live
+                : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd);
             const bridgeHops = hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
             const obfuscationDetected = bridgeHops.length > 1;
             const originChain = hops[0]?.chain ?? 'ethereum';
@@ -118,9 +197,8 @@ export function registerTraceCapitalFlow(server) {
             };
             await setCache(cacheKey, result, 3600);
             return {
-                content: [
-                    { type: 'text', text: JSON.stringify(result) },
-                ],
+                content: [{ type: 'text', text: JSON.stringify(result) }],
+                structuredContent: result,
             };
         }
         catch (err) {

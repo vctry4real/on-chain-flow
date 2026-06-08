@@ -8,6 +8,9 @@ import { connectRedis } from './cache/client.js';
 import { registerAllTools } from './tools/index.js';
 import { startAccumulationScanner } from './ingest/accumulation-scanner.js';
 import { startBridgeMonitor } from './ingest/bridge-monitor.js';
+import { startProvenanceScanner } from './ingest/provenance-scanner.js';
+import { processStreamPayload } from './ingest/event-processor.js';
+import { runGraphBackfill } from './ingest/graph-backfill.js';
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
 function createMcpServer() {
     const server = new McpServer({
@@ -22,6 +25,9 @@ async function main() {
     if (process.env['NODE_ENV'] !== 'test') {
         startAccumulationScanner();
         startBridgeMonitor();
+        startProvenanceScanner();
+        // Fire-and-forget: pre-populate Redis with historical Uniswap V3 swap data
+        runGraphBackfill('ethereum').catch((err) => console.error('[graph-backfill] Failed:', err));
     }
     const app = express();
     // Health check — used by Context Protocol validator and container probes
@@ -34,7 +40,7 @@ async function main() {
         });
     });
     // QuickNode Streams webhook — raw body required for HMAC signature verification
-    app.post('/ingest/streams', express.raw({ type: '*/*' }), (req, res) => {
+    app.post('/ingest/streams', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
         const secret = process.env['QUICKNODE_STREAM_SECRET'];
         const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
         if (secret) {
@@ -46,41 +52,70 @@ async function main() {
             }
         }
         try {
+            const chain = req.headers['x-qn-chain'] ?? 'ethereum';
             const bodyStr = rawBody.toString().trim();
-            const payload = bodyStr ? JSON.parse(bodyStr) : {};
-            const eventCount = Array.isArray(payload.data) ? payload.data.length : 0;
-            console.log(`[streams] received ${eventCount} event(s)`);
-            res.status(200).json({ received: eventCount });
+            const payload = bodyStr ? JSON.parse(bodyStr) : { data: [] };
+            const stored = await processStreamPayload(payload, chain);
+            console.log(`[streams] chain=${chain} processed ${payload.data?.length ?? 0} logs, stored ${stored} events`);
+            res.status(200).json({ received: payload.data?.length ?? 0, stored });
         }
         catch {
-            res.status(200).json({ received: 0 });
+            res.status(200).json({ received: 0, stored: 0 });
         }
     });
     // Apply JSON parsing only to MCP routes
     app.use('/mcp', express.json());
-    // Context Protocol auth middleware — verifies JWTs on protected MCP methods (tools/call)
-    app.use('/mcp', createContextMiddleware());
-    // Stateless StreamableHTTP transport — each POST is a self-contained MCP session
+    // Context Protocol auth middleware — verifies JWTs for paid tool calls.
+    // Set CTX_AUTH_ENABLED=true in production (after marketplace submission).
+    // Leave unset during development and pre-submission testing.
+    if (process.env['CTX_AUTH_ENABLED'] === 'true') {
+        app.use('/mcp', createContextMiddleware());
+    }
+    const sessions = new Map();
+    // Evict sessions idle for more than 30 minutes
+    setInterval(() => {
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        for (const [id, s] of sessions) {
+            if (s.lastUsed < cutoff) {
+                s.transport.close().catch(() => undefined);
+                s.server.close().catch(() => undefined);
+                sessions.delete(id);
+            }
+        }
+    }, 5 * 60 * 1000).unref();
+    // StreamableHTTP transport with session persistence
     app.post('/mcp', async (req, res) => {
+        const incomingId = req.headers['mcp-session-id'];
+        // Resume an existing initialized session
+        if (incomingId && sessions.has(incomingId)) {
+            const session = sessions.get(incomingId);
+            session.lastUsed = Date.now();
+            await session.transport.handleRequest(req, res, req.body);
+            return;
+        }
+        // New session — pre-generate the ID so we can store it before handleRequest fires
+        const sessionId = randomUUID();
         const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
+            sessionIdGenerator: () => sessionId,
         });
         const server = createMcpServer();
+        sessions.set(sessionId, { transport, server, lastUsed: Date.now() });
         try {
             await server.connect(transport);
             await transport.handleRequest(req, res, req.body);
         }
-        finally {
-            res.on('close', () => {
-                transport.close().catch(() => undefined);
-                server.close().catch(() => undefined);
-            });
+        catch (err) {
+            sessions.delete(sessionId);
+            transport.close().catch(() => undefined);
+            server.close().catch(() => undefined);
+            throw err;
         }
     });
     // GET /mcp — return server capabilities without authentication
     app.get('/mcp', async (req, res) => {
+        const sessionId = randomUUID();
         const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
+            sessionIdGenerator: () => sessionId,
         });
         const server = createMcpServer();
         await server.connect(transport);

@@ -159,7 +159,7 @@ export function registerDiscoveryTools(server: McpServer): void {
           total_count: CHAINS.length,
           fetched_at: new Date().toISOString(),
         };
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('SCHEMA_VALIDATION_FAIL', `get_supported_chains failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -186,7 +186,7 @@ export function registerDiscoveryTools(server: McpServer): void {
           total_count: filtered.length,
           fetched_at: new Date().toISOString(),
         };
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('SCHEMA_VALIDATION_FAIL', `get_tracked_tokens failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -212,7 +212,7 @@ export function registerDiscoveryTools(server: McpServer): void {
           total_count: items.length,
           fetched_at: new Date().toISOString(),
         };
-        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('SCHEMA_VALIDATION_FAIL', `browse_by_chain failed: ${err instanceof Error ? err.message : String(err)}`);
       }

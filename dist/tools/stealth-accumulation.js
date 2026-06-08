@@ -1,7 +1,8 @@
-import { StealthAccumulationInput, } from '../schemas/stealth-accumulation.js';
+import { StealthAccumulationInput, StealthAccumulationOutput, } from '../schemas/stealth-accumulation.js';
 import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
 import { scoreAccumulationCluster, generateAccumulationNarrative, CLASSIFIER_VERSION, } from '../ingest/analytics-engine.js';
+import { resolveTokenSymbol } from '../ingest/event-processor.js';
 // _meta — Context Protocol platform metadata (pricing, rate-limits, audit fields)
 // Ref: https://docs.ctxprotocol.com/guides/tool-metadata
 export const STEALTH_ACCUMULATION_META = {
@@ -39,16 +40,19 @@ function buildMockClusters(token_address, hours) {
 }
 // ─── Tool registration ───────────────────────────────────────────────────────
 export function registerStealthAccumulation(server) {
-    server.tool('stealth_accumulation', 'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — the same intelligence Arkham Intelligence ($1,500/year) charges for, at $0.10/response.', StealthAccumulationInput.shape, async (args) => {
+    server.registerTool('stealth_accumulation', {
+        description: 'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — the same intelligence Arkham Intelligence ($1,500/year) charges for, at $0.10/response.',
+        inputSchema: StealthAccumulationInput.shape,
+        outputSchema: StealthAccumulationOutput.shape,
+    }, async (args) => {
         try {
             const parsed = StealthAccumulationInput.parse(args);
             const cacheKey = `stealth:${parsed.chain}:${parsed.token_address.toLowerCase()}:${parsed.hours}`;
             const cached = await getCached(cacheKey);
             if (cached) {
                 return {
-                    content: [
-                        { type: 'text', text: JSON.stringify(cached) },
-                    ],
+                    content: [{ type: 'text', text: JSON.stringify(cached) }],
+                    structuredContent: cached,
                 };
             }
             const rawClusters = buildMockClusters(parsed.token_address, parsed.hours);
@@ -85,7 +89,7 @@ export function registerStealthAccumulation(server) {
             const result = {
                 timestamp: new Date().toISOString(),
                 token_address: parsed.token_address,
-                token_symbol: 'USDC',
+                token_symbol: resolveTokenSymbol(parsed.token_address),
                 chain: parsed.chain,
                 window_hours: parsed.hours,
                 classifier_version: CLASSIFIER_VERSION,
@@ -106,9 +110,8 @@ export function registerStealthAccumulation(server) {
             };
             await setCache(cacheKey, result, 1800);
             return {
-                content: [
-                    { type: 'text', text: JSON.stringify(result) },
-                ],
+                content: [{ type: 'text', text: JSON.stringify(result) }],
+                structuredContent: result,
             };
         }
         catch (err) {
