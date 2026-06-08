@@ -79,7 +79,7 @@ export function registerRawDataTools(server: McpServer): void {
           chain:          parsed.chain,
           transfers:      sourceEvents,
           total_count:    sourceEvents.length,
-          data_freshness: liveEvents.length > 0 ? 'fresh' as const : 'cached' as const,
+          data_freshness: liveEvents.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:     new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
@@ -157,7 +157,7 @@ export function registerRawDataTools(server: McpServer): void {
           total_sell_volume_usd,
           net_flow_usd:          total_buy_volume_usd - total_sell_volume_usd,
           total_count:           swaps.length,
-          data_freshness:        liveSwaps.length > 0 ? 'fresh' as const : 'cached' as const,
+          data_freshness:        liveSwaps.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:            new Date().toISOString(),
         };
         await setCache(cacheKey, result, 300);
@@ -221,7 +221,7 @@ export function registerRawDataTools(server: McpServer): void {
           events,
           total_volume_usd:  events.reduce((s, e) => s + e.amount_usd, 0),
           total_count:       events.length,
-          data_freshness:    liveBridge.length > 0 ? 'fresh' as const : 'cached' as const,
+          data_freshness:    liveBridge.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:        new Date().toISOString(),
         };
         await setCache(cacheKey, result, 120);
