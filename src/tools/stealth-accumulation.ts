@@ -111,7 +111,8 @@ export function registerStealthAccumulation(server: McpServer): void {
           freshness_secs: 0,
           data_sources: [
             'QuickNode Streams (real-time ERC-20 Transfer events, 5 chains)',
-            'Redis wallet graph (1-hop funder index for common-origin clustering)',
+            'Neo4j transaction graph (shared-funder cluster detection via [:SENT*1..2] traversal)',
+            'Redis wallet graph (1-hop funder index fallback for common-origin clustering)',
             'Internal address label registry',
           ],
         };

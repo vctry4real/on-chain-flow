@@ -276,7 +276,8 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           freshness_secs: 0,
           data_sources: [
             'QuickNode Streams (real-time ERC-20 Transfer events, 5 chains)',
-            'Redis wallet graph (1-hop funder index, secondary wallet-in/wallet-out indexes)',
+            'Neo4j transaction graph ([:SENT*1..N] backward traversal for provenance tracing)',
+            'Redis wallet graph (1-hop funder index fallback)',
             'Internal address label registry (CEX hot wallets, bridge contracts, known funds)',
           ],
         };
