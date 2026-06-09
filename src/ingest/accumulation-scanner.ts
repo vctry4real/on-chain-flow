@@ -1,10 +1,10 @@
 /**
  * Accumulation Scanner — background cron job.
  *
- * Production schedule: every 30 minutes, queries Neo4j for new wallet clusters
- * exhibiting coordinated buy behaviour and writes scored results to Redis.
- * The stealth_accumulation tool reads from this Redis cache; it never triggers
- * a live Neo4j query on the hot path.
+ * Runs every 30 minutes. Reads live ERC-20 transfer events from Redis (populated
+ * by QuickNode Streams), clusters wallets by shared 1-hop funding source, scores
+ * each cluster with the logistic regression classifier, and writes results to Redis.
+ * The stealth_accumulation tool reads from this cache on the hot path.
  */
 
 import cron from 'node-cron';
@@ -82,32 +82,11 @@ async function buildClustersFromStream(token_address: string, chain: string, hou
 }
 
 async function scanToken(token_address: string, chain: string, hours: number): Promise<void> {
-  // Try real stream data first; fall back to deterministic mock if insufficient
-  let clusters = await buildClustersFromStream(token_address, chain, hours);
+  const clusters = await buildClustersFromStream(token_address, chain, hours);
 
-  if (clusters.length === 0) {
-    // Deterministic mock — keeps smoke tests working before stream data accumulates
-    const seed = token_address.slice(2, 10);
-    const base = parseInt(seed, 16) % 100;
-    if (base < 30) return;
-
-    clusters = [{
-      wallets: [
-        `0x${seed}1111111111111111111111111111111111111111`.slice(0, 42),
-        `0x${seed}2222222222222222222222222222222222222222`.slice(0, 42),
-        `0x${seed}3333333333333333333333333333333333333333`.slice(0, 42),
-      ],
-      common_origin: `0x${seed}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.slice(0, 42),
-      origin_label: base > 60 ? 'Coinbase Hot Wallet' : 'Binance Withdrawal Address',
-      buys: Array.from({ length: Math.max(3, Math.floor(hours / 8)) }, (_, i) => ({
-        wallet: `0x${seed}${i + 1}`.padEnd(42, '1').slice(0, 42),
-        amount_usd: 25_000 + (base * 350) + (i * 1_000),
-        pool: ['Uniswap V3', 'Curve', 'Balancer', '1inch'][i % 4]!,
-        timestamp: new Date(Date.now() - (hours - i) * 3_600_000).toISOString(),
-        price_impact_pct: 0.07 + (i * 0.015),
-      })),
-    }];
-  }
+  // No live data yet — streams may still be warming up. Do not write to cache;
+  // the stealth_accumulation tool will return verdict: insufficient_data.
+  if (clusters.length === 0) return;
 
   for (const cluster of clusters) {
     const { score } = scoreAccumulationCluster(cluster);

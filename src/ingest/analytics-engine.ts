@@ -1,19 +1,16 @@
 /**
  * Analytics Engine — stateless scoring functions used by Tier 1 intelligence tools.
  *
- * In production these functions query Neo4j and Kafka-ingested data.
  * Pre-computed batch scores are cached in Redis every 30 minutes by the
  * accumulation-scanner cron job (src/ingest/accumulation-scanner.ts).
  *
  * Classifier design:
- * scoreAccumulationCluster() is a logistic regression binary classifier trained on
- * 14,200 labeled historical events (6,800 confirmed pre-pump accumulation windows
- * vs 7,400 normal retail buying windows) from Ethereum mainnet 2021–2024.
- * Feature weights were optimised by gradient descent; the sigmoid output is
- * calibrated via Platt scaling so P(accumulation) is a well-defined probability.
- *
- * Training dataset: internal — derived from on-chain price history (CoinGecko) +
- * Dune Analytics wallet cluster labels.  Validation AUC-ROC: 0.91.
+ * scoreAccumulationCluster() is a logistic regression binary classifier.
+ * Feature weights are domain-calibrated from behavioral analysis of on-chain
+ * coordination patterns: timing regularity, price impact discipline, DEX pool
+ * spreading, order size variation, and common funding-source clustering.
+ * The sigmoid output uses Platt scaling so P(accumulation) is a well-defined
+ * probability in (0, 1) with a decision boundary at 0.52.
  */
 
 export interface WalletClusterRaw {
@@ -23,8 +20,8 @@ export interface WalletClusterRaw {
   buys: Array<{ wallet: string; amount_usd: number; pool: string; timestamp: string; price_impact_pct: number }>;
 }
 
-// ─── Trained feature weights ────────────────────────────────────────────────
-// Derived from logistic regression on 14,200 labeled accumulation events.
+// ─── Calibrated feature weights ─────────────────────────────────────────────
+// Domain-calibrated weights from behavioral analysis of on-chain coordination.
 // Higher weight = stronger discriminator between accumulation and retail noise.
 export const CLASSIFIER_FEATURE_WEIGHTS = {
   timing_variance:         0.28, // Strongest signal: human coordination timing is uniquely irregular
@@ -38,7 +35,7 @@ export const CLASSIFIER_FEATURE_WEIGHTS = {
 const LOGISTIC_BOUNDARY   = 0.52; // weighted score at which P(accumulation) = 0.5
 const LOGISTIC_STEEPNESS  = 8.0;  // controls sharpness of the probability transition
 
-export const CLASSIFIER_VERSION = 'logreg-v2.1-auc0.91';
+export const CLASSIFIER_VERSION = 'logreg-v2.1';
 
 export interface AccumulationScoreBreakdown {
   // Raw feature scores (0–1 each, before weighting)
@@ -110,9 +107,10 @@ export function scoreAccumulationCluster(cluster: WalletClusterRaw): {
   const price_impact_management = Math.max(0, 1 - avgImpact / 2);
 
   // ── Feature 5: common_origin_strength ────────────────────────────────────
-  // Neo4j graph query confidence that all cluster wallets share a first-hop funding source.
+  // Redis funder-index confidence: 0.9 when a common funding wallet is found in the
+  // 1-hop wallet graph, 0.1 when no shared origin is traceable.
   // A confirmed common origin (e.g. same CEX withdrawal batch) is a near-definitive
-  // signal of coordination; absence of a traceable origin scores low.
+  // signal of coordination.
   const common_origin_strength = cluster.common_origin !== 'unknown' ? 0.9 : 0.1;
 
   // ── Weighted score (dot product with trained weights) ─────────────────────

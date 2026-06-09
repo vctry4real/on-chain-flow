@@ -24,40 +24,13 @@ export const STEALTH_ACCUMULATION_META = {
   dataBroker: { deterministic: true, auditFields: ['confidence', 'verdict', 'score_breakdown', 'data_freshness'] },
 };
 
-// ─── Mock data factory (replaced in production by Neo4j graph queries) ──────
-
-function buildMockClusters(token_address: string, hours: number): WalletClusterRaw[] {
-  const seed = token_address.slice(2, 10);
-  const base = parseInt(seed, 16) % 100;
-  if (base < 30) return [];
-
-  return [{
-    wallets: [
-      `0x${seed}1111111111111111111111111111111111111111`.slice(0, 42),
-      `0x${seed}2222222222222222222222222222222222222222`.slice(0, 42),
-      `0x${seed}3333333333333333333333333333333333333333`.slice(0, 42),
-      `0x${seed}4444444444444444444444444444444444444444`.slice(0, 42),
-      `0x${seed}5555555555555555555555555555555555555555`.slice(0, 42),
-    ],
-    common_origin: `0x${seed}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.slice(0, 42),
-    origin_label: base > 60 ? 'Coinbase Hot Wallet' : 'Binance Withdrawal Address',
-    buys: Array.from({ length: Math.max(4, hours / 6) }, (_, i) => ({
-      wallet: `0x${seed}${i + 1}`.padEnd(42, '1').slice(0, 42),
-      amount_usd: 28000 + (base * 400) + (i * 1200),
-      pool: ['Uniswap V3', 'Curve', 'Balancer', '1inch'][i % 4]!,
-      timestamp: new Date(Date.now() - (hours - i) * 3600_000).toISOString(),
-      price_impact_pct: 0.08 + (i * 0.02),
-    })),
-  }];
-}
-
 // ─── Tool registration ───────────────────────────────────────────────────────
 
 export function registerStealthAccumulation(server: McpServer): void {
   server.registerTool(
     'stealth_accumulation',
     {
-      description: 'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — the same intelligence Arkham Intelligence ($1,500/year) charges for, at $0.10/response.',
+      description: 'Detect statistically anomalous coordinated wallet accumulation before token price moves. Returns a classifier verdict, per-wallet cluster breakdown, transparent score formula, and plain-English narrative — replacing Arkham Intelligence ($1,500/year) at $0.001/call.',
       inputSchema:  StealthAccumulationInput.shape,
       outputSchema: StealthAccumulationOutput.shape,
     },
@@ -74,7 +47,9 @@ export function registerStealthAccumulation(server: McpServer): void {
           };
         }
 
-        const rawClusters = buildMockClusters(parsed.token_address, parsed.hours);
+        // No cache hit — accumulation scanner hasn't populated this token/window yet.
+        // Return insufficient_data so the caller knows to retry after streams warm up.
+        const rawClusters: WalletClusterRaw[] = [];
 
         const scoredClusters = rawClusters.map((cluster) => {
           const { score, breakdown, activity_consistent_with } = scoreAccumulationCluster(cluster);
@@ -99,9 +74,11 @@ export function registerStealthAccumulation(server: McpServer): void {
         const filteredClusters = scoredClusters.filter((c) => c._score >= parsed.min_confidence);
 
         const topScore = filteredClusters[0]?._score ?? 0;
-        const verdict = filteredClusters.length === 0
-          ? 'no_signal'
-          : topScore >= parsed.min_confidence ? 'accumulation_detected' : 'no_signal';
+        const verdict = rawClusters.length === 0
+          ? 'insufficient_data'
+          : filteredClusters.length === 0 || topScore < parsed.min_confidence
+            ? 'no_signal'
+            : 'accumulation_detected';
 
         const emptyBreakdown = {
           order_size_distribution: 0, timing_variance: 0, pool_diversity: 0,
@@ -122,19 +99,20 @@ export function registerStealthAccumulation(server: McpServer): void {
           score_breakdown:    filteredClusters[0]?._breakdown ?? emptyBreakdown,
           clusters: filteredClusters.map(({ _score: _, _breakdown: __, ...c }) => c),
           total_volume_usd: filteredClusters.reduce((s, c) => s + c.collective_position_usd, 0),
-          narrative: generateAccumulationNarrative(
-            'USDC',
-            verdict,
-            topScore,
-            filteredClusters,
-          ),
+          narrative: verdict === 'insufficient_data'
+            ? 'Insufficient stream data for this token and window. QuickNode Streams are still indexing — retry in 30 minutes once the accumulation scanner has completed its first cycle.'
+            : generateAccumulationNarrative(
+                resolveTokenSymbol(parsed.token_address),
+                verdict,
+                topScore,
+                filteredClusters,
+              ),
           data_freshness: 'fresh' as const,
           freshness_secs: 0,
           data_sources: [
-            'Alchemy WebSocket (ERC-20 Transfer events)',
-            'The Graph (Uniswap V3, Curve, Balancer subgraphs)',
+            'QuickNode Streams (real-time ERC-20 Transfer events, 5 chains)',
+            'Redis wallet graph (1-hop funder index for common-origin clustering)',
             'Internal address label registry',
-            'Neo4j transaction graph (wallet cluster detection)',
           ],
         };
 

@@ -194,7 +194,7 @@ export function registerTraceCapitalFlow(server: McpServer): void {
             path_completeness:                'full' as const,
             data_freshness:                   'cached' as const,
             freshness_secs:                   Math.round((Date.now() - new Date(precomputed.computed_at).getTime()) / 1000),
-            data_sources:                     ['Pre-computed nightly provenance (Redis)'],
+            data_sources:                     ['Pre-computed nightly provenance (Redis wallet graph, 6-hop backward traversal)'],
           };
           await setCache(cacheKey, result, 3600);
           return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
@@ -242,10 +242,9 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           data_freshness: 'fresh' as const,
           freshness_secs: 0,
           data_sources: [
-            'Alchemy WebSocket (ERC-20 Transfer events, ETH transfers)',
-            'The Graph (Uniswap V3, Stargate, Hop Protocol subgraphs)',
+            'QuickNode Streams (real-time ERC-20 Transfer events, 5 chains)',
+            'Redis wallet graph (1-hop funder index, secondary wallet-in/wallet-out indexes)',
             'Internal address label registry (CEX hot wallets, bridge contracts, known funds)',
-            'Neo4j transaction graph (6-hop provenance traversal)',
           ],
         };
 

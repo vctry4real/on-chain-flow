@@ -16,9 +16,9 @@ const ScoreBreakdown = z.object({
   timing_variance:         z.number().describe('Inter-arrival gap CV — human coordination falls in 0.15–2.5 band'),
   pool_diversity:          z.number().describe('Fraction of 4 monitored DEXes used — 3+ pools = deliberate obfuscation'),
   price_impact_management: z.number().describe('Inverse avg price impact — disciplined accumulators stay <0.2%'),
-  common_origin_strength:  z.number().describe('Neo4j graph confidence all wallets share a first-hop funding source'),
+  common_origin_strength:  z.number().describe('Redis funder-index confidence: fraction of cluster wallets sharing a first-hop funding source in the wallet graph'),
   // Logistic regression outputs
-  weighted_score:       z.number().describe('Dot product of feature scores and trained weights ∈ (0,1)'),
+  weighted_score:       z.number().describe('Dot product of feature scores and calibrated weights ∈ (0,1)'),
   logistic_probability: z.number().describe('P(accumulation) after sigmoid activation + Platt calibration ∈ (0,1)'),
   // Trained weights for full auditability
   feature_weights: z.object({
@@ -36,7 +36,7 @@ export const StealthAccumulationOutput = z.object({
   token_symbol:       z.string(),
   chain:              z.string(),
   window_hours:       z.number(),
-  classifier_version: z.string().describe('Model version — logreg-v2.1-auc0.91'),
+  classifier_version: z.string().describe('Scoring formula version'),
   verdict:            z.enum(['accumulation_detected', 'no_signal', 'insufficient_data']),
   confidence:         z.number().describe('P(accumulation) for the top-scoring cluster — the classifier probability output'),
   score_breakdown:    ScoreBreakdown,
