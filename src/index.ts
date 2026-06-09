@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createContextMiddleware } from '@ctxprotocol/sdk';
 import { connectRedis } from './cache/client.js';
+import { connectNeo4j } from './graph/client.js';
 import { registerAllTools } from './tools/index.js';
 import { startAccumulationScanner } from './ingest/accumulation-scanner.js';
 import { startBridgeMonitor } from './ingest/bridge-monitor.js';
@@ -25,6 +26,7 @@ function createMcpServer(): McpServer {
 
 async function main(): Promise<void> {
   await connectRedis();
+  await connectNeo4j();
 
   if (process.env['NODE_ENV'] !== 'test') {
     startAccumulationScanner();

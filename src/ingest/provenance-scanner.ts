@@ -16,6 +16,8 @@
 import cron from 'node-cron';
 import { redis } from '../cache/client.js';
 import { getWalletTransfers, resolveTokenSymbol } from './event-processor.js';
+import { traceProvenanceNeo4j } from '../graph/queries.js';
+import { getNeo4jDriver } from '../graph/client.js';
 
 const MAX_WALLETS_PER_CHAIN = 1_000;
 const PRECOMPUTED_TTL       = 26 * 3600;  // 26h — survives the 24h cron gap
@@ -61,6 +63,38 @@ async function traceWallet(
   address: string,
   chain: string,
 ): Promise<PrecomputedProvenance> {
+  // ── Neo4j path (primary) ──────────────────────────────────────────────────
+  if (getNeo4jDriver()) {
+    try {
+      const result = await traceProvenanceNeo4j(address, chain, 6, 1_000, true);
+      if (result && result.hops.length > 0) {
+        const hops: PrecomputedHop[] = result.hops.map((h, i) => ({
+          hop_number:       i + 1,
+          from_address:     h.from_addr,
+          to_address:       h.to_addr,
+          from_label:       resolveLabel(h.from_addr),
+          to_label:         resolveLabel(h.to_addr),
+          amount_usd:       h.amount_usd,
+          token_symbol:     resolveTokenSymbol(h.token_symbol),
+          chain:            h.chain,
+          protocol:         h.protocol,
+          timestamp:        h.timestamp,
+          tx_hash:          h.tx_hash,
+          obfuscation_flag: h.is_bridge ? 'bridge_hop' : 'none',
+        }));
+        return {
+          hops,
+          origin:       result.origin,
+          origin_label: resolveLabel(result.origin),
+          computed_at:  new Date().toISOString(),
+        };
+      }
+    } catch (err) {
+      console.error('[provenance-scanner] Neo4j traversal failed, falling back to Redis:', err);
+    }
+  }
+
+  // ── Redis fallback ────────────────────────────────────────────────────────
   const hops: PrecomputedHop[] = [];
   let current = address.toLowerCase();
   const visited = new Set<string>();

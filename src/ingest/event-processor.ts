@@ -11,6 +11,7 @@
  */
 
 import { redis } from '../cache/client.js';
+import { writeTransferEdges } from '../graph/queries.js';
 
 const ERC20_TRANSFER_SIG = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
@@ -150,7 +151,8 @@ function estimatePriceImpact(amount_usd: number): number {
 export async function processStreamPayload(payload: StreamPayload, chain = 'ethereum'): Promise<number> {
   const logs = payload.data ?? [];
   let stored = 0;
-  const pipeline = redis.multi();
+  const pipeline    = redis.multi();
+  const graphEvents: TransferEvent[] = [];
 
   for (const log of logs) {
     const topic0 = log.topics[0]?.toLowerCase();
@@ -187,6 +189,8 @@ export async function processStreamPayload(payload: StreamPayload, chain = 'ethe
       price_impact_pct: (isDexBuy || isDexSell) ? estimatePriceImpact(amount_usd) : 0,
       bridge_name:      bridgeName,
     };
+
+    graphEvents.push(event);
 
     const serialized = JSON.stringify(event);
     const scoreObj   = { score: now, value: serialized };
@@ -237,7 +241,13 @@ export async function processStreamPayload(payload: StreamPayload, chain = 'ethe
     stored++;
   }
 
-  if (stored > 0) await pipeline.exec();
+  if (stored > 0) {
+    await pipeline.exec();
+    // Fire-and-forget Neo4j write — does not block the webhook response
+    writeTransferEdges(graphEvents, chain).catch((err) =>
+      console.error('[neo4j] writeTransferEdges failed:', err),
+    );
+  }
   return stored;
 }
 

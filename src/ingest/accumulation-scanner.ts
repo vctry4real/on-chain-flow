@@ -11,6 +11,8 @@ import cron from 'node-cron';
 import { setCache } from '../cache/helpers.js';
 import { scoreAccumulationCluster, type WalletClusterRaw } from './analytics-engine.js';
 import { getTransferEvents, getFundingSource } from './event-processor.js';
+import { findWalletClusters } from '../graph/queries.js';
+import { getNeo4jDriver } from '../graph/client.js';
 
 // Production: these token addresses come from the tracked-token registry.
 // For smoke testing, we use the same seed-based deterministic set.
@@ -22,10 +24,20 @@ const TRACKED_TOKENS = [
 ];
 
 async function buildClustersFromStream(token_address: string, chain: string, hours: number): Promise<WalletClusterRaw[]> {
+  // ── Neo4j path (primary) ──────────────────────────────────────────────────
+  if (getNeo4jDriver()) {
+    try {
+      const clusters = await findWalletClusters(token_address, chain, hours, 2);
+      if (clusters.length > 0) return clusters;
+    } catch (err) {
+      console.error('[accumulation-scanner] Neo4j cluster query failed, falling back to Redis:', err);
+    }
+  }
+
+  // ── Redis fallback ────────────────────────────────────────────────────────
   const events = await getTransferEvents(chain, token_address, hours);
   if (events.length < 3) return [];
 
-  // Group by recipient wallet
   const walletMap = new Map<string, typeof events>();
   for (const ev of events) {
     const list = walletMap.get(ev.to) ?? [];
@@ -33,13 +45,11 @@ async function buildClustersFromStream(token_address: string, chain: string, hou
     walletMap.set(ev.to, list);
   }
 
-  // Keep wallets with multiple buys or a single large buy
   const active = [...walletMap.entries()].filter(
     ([, evs]) => evs.length >= 2 || (evs[0]?.amount_usd ?? 0) >= 50_000,
   );
   if (active.length < 2) return [];
 
-  // Real common-origin detection: look up each wallet's 1-hop funding source from Redis
   const funderMap = new Map<string, string[]>();
   await Promise.all(
     active.map(async ([addr]) => {
@@ -51,11 +61,8 @@ async function buildClustersFromStream(token_address: string, chain: string, hou
   );
 
   const clusters: WalletClusterRaw[] = [];
-
   for (const [funder, wallets] of funderMap.entries()) {
-    // Skip isolated unknown-origin wallets — no clustering signal
     if (wallets.length < 2 && funder === 'unknown') continue;
-
     const buys = wallets.flatMap((addr) =>
       (walletMap.get(addr) ?? []).map((ev) => ({
         wallet:           ev.to,
@@ -65,19 +72,14 @@ async function buildClustersFromStream(token_address: string, chain: string, hou
         price_impact_pct: ev.price_impact_pct > 0 ? ev.price_impact_pct : 0.10,
       })),
     );
-
     if (buys.length < 2) continue;
-
     clusters.push({
       wallets,
       common_origin: funder,
-      origin_label:  funder === 'unknown'
-        ? 'Unknown'
-        : `Funding wallet ${funder.slice(0, 8)}…`,
+      origin_label:  funder === 'unknown' ? 'Unknown' : `Funding wallet ${funder.slice(0, 8)}…`,
       buys,
     });
   }
-
   return clusters;
 }
 

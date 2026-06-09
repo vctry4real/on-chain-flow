@@ -7,6 +7,8 @@ import { getCached, setCache } from '../cache/helpers.js';
 import { structuredError } from '../errors/codes.js';
 import { getWalletTransfers, resolveTokenSymbol, type TransferEvent } from '../ingest/event-processor.js';
 import { getPrecomputedProvenance } from '../ingest/provenance-scanner.js';
+import { traceProvenanceNeo4j } from '../graph/queries.js';
+import { getNeo4jDriver } from '../graph/client.js';
 
 // _meta — Context Protocol platform metadata
 export const TRACE_CAPITAL_FLOW_META = {
@@ -200,16 +202,47 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
         }
 
-        // 2. Try live Redis traversal; fall back to deterministic mock
-        const live = await traceBackward(
-          parsed.address,
-          parsed.max_hops,
-          parsed.min_transfer_usd,
-          parsed.include_bridge_hops,
-        );
-        const { hops, origin } = live.hops.length > 0
-          ? live
-          : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd);
+        // 2. Neo4j live traversal (primary) → Redis traversal → deterministic mock
+        let hops: Hop[];
+        let origin: string;
+
+        if (getNeo4jDriver()) {
+          const neo4jResult = await traceProvenanceNeo4j(
+            parsed.address, 'ethereum', parsed.max_hops,
+            parsed.min_transfer_usd, parsed.include_bridge_hops,
+          ).catch((err) => {
+            console.error('[capital-flow] Neo4j traversal error:', err);
+            return null;
+          });
+
+          if (neo4jResult && neo4jResult.hops.length > 0) {
+            hops   = neo4jResult.hops.map((h, i) => ({
+              hop_number:       i + 1,
+              from_address:     h.from_addr,
+              to_address:       h.to_addr,
+              from_label:       getLabel(h.from_addr),
+              to_label:         getLabel(h.to_addr),
+              amount_usd:       h.amount_usd,
+              token_symbol:     resolveTokenSymbol(h.token_symbol),
+              chain:            h.chain,
+              protocol:         h.protocol,
+              timestamp:        h.timestamp,
+              tx_hash:          h.tx_hash,
+              obfuscation_flag: h.is_bridge ? ('bridge_hop' as const) : ('none' as const),
+            }));
+            origin = neo4jResult.origin;
+          } else {
+            const redisResult = await traceBackward(parsed.address, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
+            ({ hops, origin } = redisResult.hops.length > 0
+              ? redisResult
+              : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
+          }
+        } else {
+          const redisResult = await traceBackward(parsed.address, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
+          ({ hops, origin } = redisResult.hops.length > 0
+            ? redisResult
+            : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
+        }
 
         const bridgeHops = hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
         const obfuscationDetected = bridgeHops.length > 1;
