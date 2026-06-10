@@ -82,7 +82,8 @@ export function registerRawDataTools(server: McpServer): void {
           data_freshness: liveEvents.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:     new Date().toISOString(),
         };
-        await setCache(cacheKey, result, 300);
+        // Only cache real data — never cache mock fallback so live events show immediately
+        if (liveEvents.length > 0) await setCache(cacheKey, result, 300);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_wallet_transfers failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -160,7 +161,7 @@ export function registerRawDataTools(server: McpServer): void {
           data_freshness:        liveSwaps.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:            new Date().toISOString(),
         };
-        await setCache(cacheKey, result, 300);
+        if (liveSwaps.length > 0) await setCache(cacheKey, result, 300);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_token_swaps failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -224,7 +225,7 @@ export function registerRawDataTools(server: McpServer): void {
           data_freshness:    liveBridge.length > 0 ? 'fresh' as const : 'stale' as const,
           fetched_at:        new Date().toISOString(),
         };
-        await setCache(cacheKey, result, 120);
+        if (liveBridge.length > 0) await setCache(cacheKey, result, 120);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (err) {
         return structuredError('UPSTREAM_UNAVAILABLE', `get_bridge_events failed: ${err instanceof Error ? err.message : String(err)}`);
