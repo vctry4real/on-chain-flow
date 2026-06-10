@@ -88,7 +88,7 @@ const BRIDGE_NAMES: Record<string, string> = {
   '0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f': 'Arbitrum Gateway',
 };
 
-const MIN_USD   = 5_000;
+const MIN_USD   = 100;
 const TTL_72H   = 72 * 3600;
 const TTL_24H   = 24 * 3600;
 
