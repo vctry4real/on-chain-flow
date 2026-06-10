@@ -149,7 +149,12 @@ function estimatePriceImpact(amount_usd: number): number {
 }
 
 export async function processStreamPayload(payload: StreamPayload, chain = 'ethereum'): Promise<number> {
-  const logs = payload.data ?? [];
+  const rawData = payload.data ?? [];
+  // QuickNode Logs dataset delivers data as array-of-arrays (one sub-array per transaction).
+  // Flatten to a single list of log entries before processing.
+  const logs: StreamPayload['data'] = rawData.length > 0 && Array.isArray(rawData[0])
+    ? (rawData as unknown as Array<StreamPayload['data']>).flat()
+    : rawData;
   let stored = 0;
   const pipeline    = redis.multi();
   const graphEvents: TransferEvent[] = [];
