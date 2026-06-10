@@ -16,10 +16,11 @@ import { writeTransferEdges } from '../graph/queries.js';
 const ERC20_TRANSFER_SIG = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 const TOKEN_DECIMALS: Record<string, number> = {
-  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,  // USDC (Ethereum)
-  '0xdac17f958d2ee523a2206206994597c13d831ec7': 6,  // USDT (Ethereum)
-  '0xaf88d065e77c8cc2239327c5edb3a432268e5831': 6,  // USDC (Arbitrum)
-  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6,  // USDC (Base)
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,   // USDC (Ethereum)
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': 6,   // USDT (Ethereum)
+  '0xaf88d065e77c8cc2239327c5edb3a432268e5831': 6,   // USDC (Arbitrum)
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6,   // USDC (Base)
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 18,  // DAI  (1 DAI ≈ $1, amount maps directly to USD)
 };
 
 const TOKEN_SYMBOLS: Record<string, string> = {
