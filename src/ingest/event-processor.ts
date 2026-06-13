@@ -149,17 +149,29 @@ function estimatePriceImpact(amount_usd: number): number {
   return parseFloat(Math.min(2.0, 0.02 + Math.log10(Math.max(1, amount_usd / 10_000)) * 0.1).toFixed(4));
 }
 
-export async function processStreamPayload(payload: StreamPayload, chain = 'ethereum'): Promise<number> {
-  const rawData = payload.data ?? [];
-  // QuickNode Logs dataset delivers data as data[block][tx][log] — three levels deep.
-  // Flatten all levels to a single list of log entries before processing.
-  let logs: StreamPayload['data'];
-  if (rawData.length > 0 && Array.isArray(rawData[0])) {
-    const level1 = (rawData as unknown as unknown[][]).flat();
-    logs = (Array.isArray(level1[0]) ? (level1 as unknown as unknown[][]).flat() : level1) as StreamPayload['data'];
-  } else {
-    logs = rawData;
+type RawLog = StreamPayload['data'][number];
+
+// Recursively collect every log-shaped object (has `topics` + `address`) from an
+// arbitrarily nested QuickNode payload. Robust to flat arrays, data[block][tx][log]
+// nesting, and an extra { data: ... } wrapper QuickNode may add around filter output.
+function collectLogs(node: unknown, out: RawLog[]): void {
+  if (Array.isArray(node)) {
+    for (const item of node) collectLogs(item, out);
+    return;
   }
+  if (node && typeof node === 'object') {
+    const obj = node as Record<string, unknown>;
+    if (Array.isArray(obj['topics']) && typeof obj['address'] === 'string') {
+      out.push(obj as unknown as RawLog);
+      return;
+    }
+    if ('data' in obj) collectLogs(obj['data'], out);
+  }
+}
+
+export async function processStreamPayload(payload: StreamPayload, chain = 'ethereum'): Promise<number> {
+  const logs: RawLog[] = [];
+  collectLogs(payload, logs);
   let stored = 0;
   const pipeline    = redis.multi();
   const graphEvents: TransferEvent[] = [];
