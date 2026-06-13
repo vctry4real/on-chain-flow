@@ -12,29 +12,38 @@ export async function connectNeo4j(): Promise<void> {
     return;
   }
 
-  driver = neo4j.driver(uri, neo4j.auth.basic(user, pass), {
-    maxConnectionPoolSize: 20,
-    connectionAcquisitionTimeout: 5000,
-  });
-
-  await driver.verifyConnectivity();
-  console.log(`[neo4j] Connected to ${uri}`);
-
-  // Idempotent index creation
-  const session = driver.session();
+  // Never let a Neo4j outage crash the server — graph features degrade gracefully
+  // to the Redis fallback paths if the connection or index setup fails.
   try {
-    await session.run(
-      'CREATE INDEX wallet_address IF NOT EXISTS FOR (w:Wallet) ON (w.address)',
-    );
-    await session.run(
-      'CREATE INDEX sent_token_chain IF NOT EXISTS FOR ()-[r:SENT]-() ON (r.token_address, r.chain)',
-    );
-    await session.run(
-      'CREATE INDEX sent_timestamp IF NOT EXISTS FOR ()-[r:SENT]-() ON (r.timestamp)',
-    );
-    console.log('[neo4j] Indexes ready');
-  } finally {
-    await session.close();
+    const candidate = neo4j.driver(uri, neo4j.auth.basic(user, pass), {
+      maxConnectionPoolSize: 20,
+      connectionAcquisitionTimeout: 5000,
+    });
+
+    await candidate.verifyConnectivity();
+    console.log(`[neo4j] Connected to ${uri}`);
+
+    // Idempotent index creation
+    const session = candidate.session();
+    try {
+      await session.run(
+        'CREATE INDEX wallet_address IF NOT EXISTS FOR (w:Wallet) ON (w.address)',
+      );
+      await session.run(
+        'CREATE INDEX sent_token_chain IF NOT EXISTS FOR ()-[r:SENT]-() ON (r.token_address, r.chain)',
+      );
+      await session.run(
+        'CREATE INDEX sent_timestamp IF NOT EXISTS FOR ()-[r:SENT]-() ON (r.timestamp)',
+      );
+      console.log('[neo4j] Indexes ready');
+    } finally {
+      await session.close();
+    }
+
+    driver = candidate;
+  } catch (err) {
+    console.error('[neo4j] Connection failed — graph features disabled, using Redis fallback:', err instanceof Error ? err.message : err);
+    driver = null;
   }
 }
 
