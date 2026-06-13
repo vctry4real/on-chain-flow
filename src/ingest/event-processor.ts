@@ -275,17 +275,31 @@ export async function processStreamPayload(payload: StreamPayload, chain = 'ethe
 
 // ─── Read helpers ─────────────────────────────────────────────────────────────
 
-const SCORE_OPTS = { BY: 'SCORE' as const };
+// Read all members of a ZSET by index and filter by the embedded ISO timestamp in
+// JS. Avoids the BY-SCORE range query, whose numeric-bound handling silently
+// returned nothing under node-redis v5. TTLs keep these sets small (≤72h of data).
+async function readRecentZSet<T extends { timestamp: string }>(
+  key: string,
+  windowHours: number,
+): Promise<T[]> {
+  const cutoff = Date.now() - windowHours * 3600 * 1000;
+  const raw    = await redis.zRange(key, 0, -1);
+  const out: T[] = [];
+  for (const e of raw) {
+    try {
+      const obj = JSON.parse(e) as T;
+      if (new Date(obj.timestamp).getTime() >= cutoff) out.push(obj);
+    } catch { /* skip malformed entry */ }
+  }
+  return out;
+}
 
 export async function getTransferEvents(
   chain: string,
   tokenAddress: string,
   windowHours: number,
 ): Promise<TransferEvent[]> {
-  const key      = `stream:transfers:${chain}:${tokenAddress.toLowerCase()}`;
-  const minScore = Date.now() - windowHours * 3600 * 1000;
-  const entries  = await redis.zRange(key, minScore, '+inf', SCORE_OPTS);
-  return entries.map((e) => JSON.parse(e) as TransferEvent);
+  return readRecentZSet<TransferEvent>(`stream:transfers:${chain}:${tokenAddress.toLowerCase()}`, windowHours);
 }
 
 export async function getWalletTransfers(
@@ -294,17 +308,14 @@ export async function getWalletTransfers(
   windowHours: number,
   direction: 'in' | 'out' | 'both' = 'both',
 ): Promise<TransferEvent[]> {
-  const minScore = Date.now() - windowHours * 3600 * 1000;
   const addr     = address.toLowerCase();
   const results: TransferEvent[] = [];
 
   if (direction === 'in' || direction === 'both') {
-    const raw = await redis.zRange(`stream:wallet_in:${chain}:${addr}`, minScore, '+inf', SCORE_OPTS);
-    results.push(...raw.map((e) => JSON.parse(e) as TransferEvent));
+    results.push(...await readRecentZSet<TransferEvent>(`stream:wallet_in:${chain}:${addr}`, windowHours));
   }
   if (direction === 'out' || direction === 'both') {
-    const raw = await redis.zRange(`stream:wallet_out:${chain}:${addr}`, minScore, '+inf', SCORE_OPTS);
-    results.push(...raw.map((e) => JSON.parse(e) as TransferEvent));
+    results.push(...await readRecentZSet<TransferEvent>(`stream:wallet_out:${chain}:${addr}`, windowHours));
   }
 
   // Deduplicate (same tx can appear in both in and out if self-transfer, unlikely but safe)
@@ -326,10 +337,7 @@ export async function getTokenSwaps(
   tokenAddress: string,
   windowHours: number,
 ): Promise<SwapEvent[]> {
-  const key      = `stream:dex_swap:${chain}:${tokenAddress.toLowerCase()}`;
-  const minScore = Date.now() - windowHours * 3600 * 1000;
-  const raw      = await redis.zRange(key, minScore, '+inf', SCORE_OPTS);
-  return raw.map((e) => JSON.parse(e) as SwapEvent);
+  return readRecentZSet<SwapEvent>(`stream:dex_swap:${chain}:${tokenAddress.toLowerCase()}`, windowHours);
 }
 
 export async function getBridgeEvents(
