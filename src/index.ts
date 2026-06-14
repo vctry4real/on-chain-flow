@@ -50,6 +50,46 @@ async function main(): Promise<void> {
     });
   });
 
+  // TEMP debug — raw Redis roundtrip + key inspection. Remove after diagnosis.
+  app.get('/debug/redis', async (req, res) => {
+    try {
+      const { redis } = await import('./cache/client.js');
+      const out: Record<string, unknown> = {};
+
+      // 1. zAdd → zRange roundtrip on a throwaway key
+      const rtKey = `debug:roundtrip:${Date.now()}`;
+      await redis.zAdd(rtKey, { score: Date.now(), value: JSON.stringify({ hello: 'world', timestamp: new Date().toISOString() }) });
+      out['roundtrip_members'] = await redis.zRange(rtKey, 0, -1);
+      out['roundtrip_card'] = await redis.zCard(rtKey);
+      await redis.del(rtKey);
+
+      // 2. Inspect a specific wallet's stream keys if provided
+      const wallet = (req.query['wallet'] as string | undefined)?.toLowerCase();
+      const chain = (req.query['chain'] as string | undefined) ?? 'ethereum';
+      if (wallet) {
+        const inKey = `stream:wallet_in:${chain}:${wallet}`;
+        const outKey = `stream:wallet_out:${chain}:${wallet}`;
+        out['wallet_in_key'] = inKey;
+        out['wallet_in_card'] = await redis.zCard(inKey);
+        out['wallet_in_sample'] = (await redis.zRange(inKey, 0, -1)).slice(0, 3);
+        out['wallet_out_card'] = await redis.zCard(outKey);
+      }
+
+      // 3. List a sample of stream:* keys that actually exist
+      const keys: string[] = [];
+      for await (const k of redis.scanIterator({ MATCH: 'stream:*', COUNT: 100 })) {
+        keys.push(...(Array.isArray(k) ? k : [k]));
+        if (keys.length >= 30) break;
+      }
+      out['existing_stream_keys'] = keys.slice(0, 30);
+      out['existing_stream_keys_count'] = keys.length;
+
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // QuickNode Streams webhook — raw body required for HMAC signature verification
   app.post('/ingest/streams', express.raw({ type: '*/*', limit: '10mb' }), async (req: Request, res: Response) => {
     const secret = process.env['QUICKNODE_STREAM_SECRET'];
