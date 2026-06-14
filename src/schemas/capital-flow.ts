@@ -5,6 +5,10 @@ export const TraceCapitalFlowInput = z.object({
     .string()
     .describe('Wallet address to trace (0x-prefixed)')
     .default('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'),
+  chain: z
+    .enum(['ethereum', 'arbitrum', 'base', 'optimism', 'bnb'])
+    .default('ethereum')
+    .describe('Chain the subject address lives on'),
   max_hops: z
     .number()
     .min(1)

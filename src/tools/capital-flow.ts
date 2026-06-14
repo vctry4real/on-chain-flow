@@ -44,7 +44,7 @@ function getEntityType(address: string): string {
 
 type Hop = ReturnType<typeof buildProvenanceChain>['hops'][number];
 
-function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string): Hop {
+function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string, chain: string): Hop {
   return {
     hop_number:       hopNumber,
     from_address:     ev.from,
@@ -53,8 +53,8 @@ function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string)
     to_label:         getLabel(toAddr),
     amount_usd:       ev.amount_usd,
     token_symbol:     resolveTokenSymbol(ev.token),
-    chain:            'ethereum',
-    protocol:         ev.is_bridge ? ev.bridge_name || 'Bridge' : ev.is_dex_buy ? ev.pool : 'Ethereum transfer',
+    chain,
+    protocol:         ev.is_bridge ? ev.bridge_name || 'Bridge' : ev.is_dex_buy ? ev.pool : `${chain} transfer`,
     timestamp:        ev.timestamp,
     tx_hash:          ev.tx_hash,
     obfuscation_flag: ev.is_bridge ? ('bridge_hop' as const) : ('none' as const),
@@ -63,6 +63,7 @@ function buildHopFromEvent(hopNumber: number, ev: TransferEvent, toAddr: string)
 
 async function traceBackward(
   address: string,
+  chain: string,
   maxHops: number,
   minTransferUsd: number,
   includeBridgeHops: boolean,
@@ -75,7 +76,7 @@ async function traceBackward(
     if (visited.has(current)) break;
     visited.add(current);
 
-    const inbound = await getWalletTransfers('ethereum', current, 168, 'in');
+    const inbound = await getWalletTransfers(chain, current, 168, 'in');
     if (inbound.length === 0) break;
 
     // Pick the largest qualifying incoming transfer
@@ -85,7 +86,7 @@ async function traceBackward(
     if (candidates.length === 0) break;
 
     const largest = candidates.reduce((best, ev) => ev.amount_usd > best.amount_usd ? ev : best);
-    hops.push(buildHopFromEvent(i + 1, largest, current));
+    hops.push(buildHopFromEvent(i + 1, largest, current, chain));
     current = largest.from;
 
     // Stop at a known labelled entity (CEX, bridge contract, etc.)
@@ -99,6 +100,7 @@ async function traceBackward(
 
 function buildProvenanceChain(
   address: string,
+  subjectChain: string,
   max_hops: number,
   include_bridge_hops: boolean,
   min_transfer_usd: number,
@@ -109,13 +111,14 @@ function buildProvenanceChain(
   const hops = [];
   let current = address;
 
-  const protocols = ['Ethereum transfer', 'Uniswap V3 swap', 'Stargate bridge', 'Hop Protocol bridge', 'Ethereum transfer'];
-  const chains    = ['ethereum', 'arbitrum', 'ethereum', 'base', 'ethereum'];
+  // Hops alternate between the subject chain and cross-chain bridge legs.
+  const protocols = [`${subjectChain} transfer`, 'Uniswap V3 swap', 'Stargate bridge', 'Hop Protocol bridge', `${subjectChain} transfer`];
+  const chains    = [subjectChain, subjectChain, subjectChain, 'ethereum', subjectChain];
 
   for (let i = 0; i < hopCount; i++) {
     const prev = `0x${(seed + i).toString(16).padStart(40, 'a')}`.slice(0, 42);
-    const protocol = protocols[i % protocols.length] ?? 'Ethereum transfer';
-    const chain    = chains[i % chains.length] ?? 'ethereum';
+    const protocol = protocols[i % protocols.length] ?? `${subjectChain} transfer`;
+    const chain    = chains[i % chains.length] ?? subjectChain;
     const isBridge = protocol.includes('bridge');
 
     if (isBridge && !include_bridge_hops) continue;
@@ -162,7 +165,7 @@ export function registerTraceCapitalFlow(server: McpServer): void {
           return structuredError('INVALID_ADDRESS', `Address must be a 0x-prefixed 40-hex-character Ethereum address. Got: ${parsed.address}`);
         }
 
-        const cacheKey = `provenance:${parsed.address.toLowerCase()}:${parsed.max_hops}:${parsed.include_bridge_hops}`;
+        const cacheKey = `provenance:${parsed.chain}:${parsed.address.toLowerCase()}:${parsed.max_hops}:${parsed.include_bridge_hops}`;
 
         const cached = await getCached(cacheKey);
         if (cached) {
@@ -173,7 +176,7 @@ export function registerTraceCapitalFlow(server: McpServer): void {
         }
 
         // 1. Check nightly pre-computed provenance (sub-millisecond)
-        const precomputed = await getPrecomputedProvenance('ethereum', parsed.address);
+        const precomputed = await getPrecomputedProvenance(parsed.chain, parsed.address);
         if (precomputed && precomputed.hops.length > 0) {
           const bridgeHops = precomputed.hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
           const riskFlags: string[] = [];
@@ -187,14 +190,14 @@ export function registerTraceCapitalFlow(server: McpServer): void {
             hops_traced:                      precomputed.hops.length,
             origin_address:                   precomputed.origin,
             origin_label:                     precomputed.origin_label,
-            origin_chain:                     precomputed.hops[0]?.chain ?? 'ethereum',
+            origin_chain:                     precomputed.hops[0]?.chain ?? parsed.chain,
             provenance_chain:                 precomputed.hops,
             obfuscation_techniques_detected:  bridgeHops.length > 1 ? ['bridge_hop_layering'] : [],
             risk_flags:                       riskFlags,
             narrative:                        `Capital tracing for ${parsed.address.slice(0, 8)}…: Origin identified as ${precomputed.origin_label}. Funds moved through ${precomputed.hops.length} hop${precomputed.hops.length !== 1 ? 's' : ''}. ${riskFlags.length > 0 ? `Risk flags: ${riskFlags.join('; ')}.` : 'No significant risk flags detected.'} (Pre-computed ${precomputed.computed_at.slice(0, 10)}.)`,
             confidence:                       0.92,
             path_completeness:                'full' as const,
-            data_freshness:                   'cached' as const,
+            data_freshness:                   'stale' as const,
             freshness_secs:                   Math.round((Date.now() - new Date(precomputed.computed_at).getTime()) / 1000),
             data_sources:                     ['Pre-computed nightly provenance (Redis wallet graph, 6-hop backward traversal)'],
           };
@@ -208,7 +211,7 @@ export function registerTraceCapitalFlow(server: McpServer): void {
 
         if (getNeo4jDriver()) {
           const neo4jResult = await traceProvenanceNeo4j(
-            parsed.address, 'ethereum', parsed.max_hops,
+            parsed.address, parsed.chain, parsed.max_hops,
             parsed.min_transfer_usd, parsed.include_bridge_hops,
           ).catch((err) => {
             console.error('[capital-flow] Neo4j traversal error:', err);
@@ -232,22 +235,22 @@ export function registerTraceCapitalFlow(server: McpServer): void {
             }));
             origin = neo4jResult.origin;
           } else {
-            const redisResult = await traceBackward(parsed.address, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
+            const redisResult = await traceBackward(parsed.address, parsed.chain, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
             ({ hops, origin } = redisResult.hops.length > 0
               ? redisResult
-              : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
+              : buildProvenanceChain(parsed.address, parsed.chain, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
           }
         } else {
-          const redisResult = await traceBackward(parsed.address, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
+          const redisResult = await traceBackward(parsed.address, parsed.chain, parsed.max_hops, parsed.min_transfer_usd, parsed.include_bridge_hops);
           ({ hops, origin } = redisResult.hops.length > 0
             ? redisResult
-            : buildProvenanceChain(parsed.address, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
+            : buildProvenanceChain(parsed.address, parsed.chain, parsed.max_hops, parsed.include_bridge_hops, parsed.min_transfer_usd));
         }
 
         const bridgeHops = hops.filter((h) => h.obfuscation_flag === 'bridge_hop');
         const obfuscationDetected = bridgeHops.length > 1;
 
-        const originChain = hops[0]?.chain ?? 'ethereum';
+        const originChain = hops[0]?.chain ?? parsed.chain;
         const originLabel = getLabel(origin);
         const pathCompleteness = hops.length >= parsed.max_hops ? 'partial' : 'full';
 
