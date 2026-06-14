@@ -15,13 +15,6 @@ import { runGraphBackfill } from './ingest/graph-backfill.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
 
-// Per-process startup marker — lets us detect multiple replicas behind the LB.
-const INSTANCE_ID = randomUUID().slice(0, 8);
-const REDIS_URL_HASH = createHmac('sha256', 'diag')
-  .update(process.env['REDIS_URL'] ?? 'unset')
-  .digest('hex')
-  .slice(0, 8);
-
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: 'onchain-flow-mcp',
@@ -53,70 +46,8 @@ async function main(): Promise<void> {
       status: 'ok',
       server: 'onchain-flow-mcp',
       version: '1.0.0',
-      instance_id: INSTANCE_ID,
-      redis_url_hash: REDIS_URL_HASH,
-      uptime_s: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
     });
-  });
-
-  // TEMP debug — raw Redis roundtrip + key inspection. Remove after diagnosis.
-  app.get('/debug/redis', async (req, res) => {
-    try {
-      const { redis } = await import('./cache/client.js');
-      const out: Record<string, unknown> = {};
-
-      // 1. zAdd → zRange roundtrip on a throwaway key
-      const rtKey = `debug:roundtrip:${Date.now()}`;
-      await redis.zAdd(rtKey, { score: Date.now(), value: JSON.stringify({ hello: 'world', timestamp: new Date().toISOString() }) });
-      out['roundtrip_members'] = await redis.zRange(rtKey, 0, -1);
-      out['roundtrip_card'] = await redis.zCard(rtKey);
-      await redis.del(rtKey);
-
-      // 2. Inspect a specific wallet's stream keys if provided
-      const wallet = (req.query['wallet'] as string | undefined)?.toLowerCase();
-      const chain = (req.query['chain'] as string | undefined) ?? 'ethereum';
-      if (wallet) {
-        const inKey = `stream:wallet_in:${chain}:${wallet}`;
-        const outKey = `stream:wallet_out:${chain}:${wallet}`;
-        out['wallet_in_key'] = inKey;
-        out['wallet_in_card'] = await redis.zCard(inKey);
-        const rawIn = await redis.zRange(inKey, 0, -1);
-        out['wallet_in_sample'] = rawIn.slice(0, 3);
-        out['wallet_out_card'] = await redis.zCard(outKey);
-
-        // Replicate readRecentZSet's filter logic explicitly
-        const nowMs = Date.now();
-        out['server_now'] = new Date(nowMs).toISOString();
-        out['parsed_timestamps'] = rawIn.slice(0, 3).map((e) => {
-          try {
-            const o = JSON.parse(e) as { timestamp: string };
-            const ts = new Date(o.timestamp).getTime();
-            return { timestamp: o.timestamp, ms: ts, age_secs: Math.round((nowMs - ts) / 1000) };
-          } catch (e2) { return { parse_error: String(e2) }; }
-        });
-
-        // Call the ACTUAL functions the tools use
-        const { getWalletTransfers } = await import('./ingest/event-processor.js');
-        const { getCached } = await import('./cache/helpers.js');
-        out['getWalletTransfers_1h'] = (await getWalletTransfers(chain, wallet, 1)).length;
-        out['getWalletTransfers_72h'] = (await getWalletTransfers(chain, wallet, 72)).length;
-        out['tool_cache_present'] = (await getCached(`transfers:${chain}:${wallet}:1`)) !== null;
-      }
-
-      // 3. List a sample of stream:* keys that actually exist
-      const keys: string[] = [];
-      for await (const k of redis.scanIterator({ MATCH: 'stream:*', COUNT: 100 })) {
-        keys.push(...(Array.isArray(k) ? k : [k]));
-        if (keys.length >= 30) break;
-      }
-      out['existing_stream_keys'] = keys.slice(0, 30);
-      out['existing_stream_keys_count'] = keys.length;
-
-      res.json(out);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
   });
 
   // QuickNode Streams webhook — raw body required for HMAC signature verification
