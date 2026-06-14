@@ -15,6 +15,13 @@ import { runGraphBackfill } from './ingest/graph-backfill.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
 
+// Per-process startup marker — lets us detect multiple replicas behind the LB.
+const INSTANCE_ID = randomUUID().slice(0, 8);
+const REDIS_URL_HASH = createHmac('sha256', 'diag')
+  .update(process.env['REDIS_URL'] ?? 'unset')
+  .digest('hex')
+  .slice(0, 8);
+
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: 'onchain-flow-mcp',
@@ -46,6 +53,9 @@ async function main(): Promise<void> {
       status: 'ok',
       server: 'onchain-flow-mcp',
       version: '1.0.0',
+      instance_id: INSTANCE_ID,
+      redis_url_hash: REDIS_URL_HASH,
+      uptime_s: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
     });
   });
