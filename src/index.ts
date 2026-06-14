@@ -71,8 +71,27 @@ async function main(): Promise<void> {
         const outKey = `stream:wallet_out:${chain}:${wallet}`;
         out['wallet_in_key'] = inKey;
         out['wallet_in_card'] = await redis.zCard(inKey);
-        out['wallet_in_sample'] = (await redis.zRange(inKey, 0, -1)).slice(0, 3);
+        const rawIn = await redis.zRange(inKey, 0, -1);
+        out['wallet_in_sample'] = rawIn.slice(0, 3);
         out['wallet_out_card'] = await redis.zCard(outKey);
+
+        // Replicate readRecentZSet's filter logic explicitly
+        const nowMs = Date.now();
+        out['server_now'] = new Date(nowMs).toISOString();
+        out['parsed_timestamps'] = rawIn.slice(0, 3).map((e) => {
+          try {
+            const o = JSON.parse(e) as { timestamp: string };
+            const ts = new Date(o.timestamp).getTime();
+            return { timestamp: o.timestamp, ms: ts, age_secs: Math.round((nowMs - ts) / 1000) };
+          } catch (e2) { return { parse_error: String(e2) }; }
+        });
+
+        // Call the ACTUAL functions the tools use
+        const { getWalletTransfers } = await import('./ingest/event-processor.js');
+        const { getCached } = await import('./cache/helpers.js');
+        out['getWalletTransfers_1h'] = (await getWalletTransfers(chain, wallet, 1)).length;
+        out['getWalletTransfers_72h'] = (await getWalletTransfers(chain, wallet, 72)).length;
+        out['tool_cache_present'] = (await getCached(`transfers:${chain}:${wallet}:1`)) !== null;
       }
 
       // 3. List a sample of stream:* keys that actually exist
